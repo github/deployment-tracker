@@ -3,6 +3,11 @@
 A Kubernetes controller that monitors pod lifecycles and uploads
 deployment records to GitHub's artifact metadata API.
 
+> [!IMPORTANT]
+> For the correlation to work in the backend, container images must be
+> built with [GitHub Artifact
+> Attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations).
+
 ## Features
 
 - **Informer-based controller**: Uses Kubernetes SharedInformers for
