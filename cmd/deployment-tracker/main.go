@@ -75,6 +75,29 @@ func main() {
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
 	flag.Parse()
 
+	var cfg = Config{
+		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
+		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
+		PhysicalEnvironment: os.Getenv("PHYSICAL_ENVIRONMENT"),
+		Cluster:             os.Getenv("CLUSTER"),
+		APIToken:            getEnvOrDefault("API_TOKEN", ""),
+		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
+		Org:                 os.Getenv("ORG"),
+	}
+
+	if cfg.LogicalEnvironment == "" {
+		fmt.Fprint(os.Stderr, "Logical environment is required\n")
+		os.Exit(1)
+	}
+	if cfg.Cluster == "" {
+		fmt.Fprint(os.Stderr, "Cluster is required\n")
+		os.Exit(1)
+	}
+	if cfg.Org == "" {
+		fmt.Fprint(os.Stderr, "Org is required\n")
+		os.Exit(1)
+	}
+
 	config, err := createConfig(kubeconfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating Kubernetes config: %v\n", err)
@@ -97,15 +120,6 @@ func main() {
 		cancel()
 	}()
 
-	var cfg = Config{
-		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
-		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
-		PhysicalEnvironment: os.Getenv("PHYSICAL_ENVIRONMENT"),
-		Cluster:             os.Getenv("CLUSTER"),
-		APIToken:            getEnvOrDefault("API_TOKEN", ""),
-		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
-		Org:                 os.Getenv("ORG"),
-	}
 	controller := NewController(clientset, namespace, &cfg)
 
 	fmt.Println("Starting deployment-tracker controller")

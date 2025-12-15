@@ -49,9 +49,9 @@ deployment records to GitHub's artifact metadata API.
 | `ORG`                  | GitHub organization name  | (required)                                           |
 | `BASE_URL`             | API base URL              | `api.github.com`                                     |
 | `DN_TEMPLATE`          | Deployment name template  | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
-| `LOGICAL_ENVIRONMENT`  | Logical environment name  | `""`                                                 |
+| `LOGICAL_ENVIRONMENT`  | Logical environment name  | (required)                                           |
 | `PHYSICAL_ENVIRONMENT` | Physical environment name | `""`                                                 |
-| `CLUSTER`              | Cluster name              | `""`                                                 |
+| `CLUSTER`              | Cluster name              | (required)                                           |
 | `API_TOKEN`            | API authentication token  | `""`                                                 |
 
 > [!NOTE]
