@@ -1,5 +1,11 @@
 # Deployment Tracker
 
+> [!CAUTION]
+> This project is in an early preview state and contains experimental
+> code. It is under active development and not ready for production
+> use. Breaking changes are likely, and stability or security is not
+> guaranteed. Use at your own risk.
+
 A Kubernetes controller that monitors pod lifecycles and uploads
 deployment records to GitHub's artifact metadata API.
 
