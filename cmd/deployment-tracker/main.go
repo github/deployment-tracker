@@ -55,21 +55,6 @@ type Controller struct {
 	cfg         *Config
 }
 
-// cfg is the global configuration instance
-var cfg Config
-
-func initConfig() {
-	cfg = Config{
-		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
-		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
-		PhysicalEnvironment: os.Getenv("PHYSICAL_ENVIRONMENT"),
-		Cluster:             os.Getenv("CLUSTER"),
-		APIToken:            getEnvOrDefault("API_TOKEN", ""),
-		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
-		Org:                 os.Getenv("ORG"),
-	}
-}
-
 func getEnvOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -78,8 +63,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 }
 
 func main() {
-	initConfig()
-
 	var (
 		kubeconfig string
 		namespace  string
@@ -114,6 +97,15 @@ func main() {
 		cancel()
 	}()
 
+	var cfg = Config{
+		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
+		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
+		PhysicalEnvironment: os.Getenv("PHYSICAL_ENVIRONMENT"),
+		Cluster:             os.Getenv("CLUSTER"),
+		APIToken:            getEnvOrDefault("API_TOKEN", ""),
+		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
+		Org:                 os.Getenv("ORG"),
+	}
 	controller := NewController(clientset, namespace, &cfg)
 
 	fmt.Println("Starting deployment-tracker controller")
