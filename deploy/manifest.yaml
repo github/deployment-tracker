@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deployment-tracker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-tracker
+  namespace: deployment-tracker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-tracker
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deployment-tracker
+subjects:
+  - kind: ServiceAccount
+    name: deployment-tracker
+    namespace: deployment-tracker
+roleRef:
+  kind: ClusterRole
+  name: deployment-tracker
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-tracker
+  namespace: deployment-tracker
+  labels:
+    app: deployment-tracker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deployment-tracker
+  template:
+    metadata:
+      labels:
+        app: deployment-tracker
+    spec:
+      serviceAccountName: deployment-tracker
+      containers:
+        - name: deployment-tracker
+          image: deployment-tracker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DN_TEMPLATE
+              value: "{{namespace}}_{{deploymentName}}_{{containerName}}"
+            - name: ORG
+              value: "test-org"
+            - name: LOGICAL_ENVIRONMENT
+              value: "staging"
+            - name: PHYSICAL_ENVIRONMENT
+              value: "iad-moda1"
+            - name: CLUSTER
+              value: "kommendorkapten"
+            - name: BASE_URL
+              value: "http://artifact-registry.artifact-registry.svc.cluster.local:9090"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
