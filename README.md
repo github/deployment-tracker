@@ -23,36 +23,6 @@ deployment records to GitHub's artifact metadata API.
    API
 5. Failed requests are automatically retried with exponential backoff
 
-## Building
-
-```bash
-go build -o deployment-tracker .
-```
-
-## Usage
-
-### Local Development (with kubeconfig)
-
-```bash
-# Monitor all namespaces
-./deployment-tracker -kubeconfig ~/.kube/config
-
-# Monitor specific namespace
-./deployment-tracker -kubeconfig ~/.kube/config -namespace default
-
-# Use more workers
-./deployment-tracker -kubeconfig ~/.kube/config -workers 4
-```
-
-### In-Cluster Deployment
-
-When running inside Kubernetes, the controller automatically uses
-in-cluster configuration:
-
-```bash
-./deployment-tracker
-```
-
 ## Command Line Options
 
 | Flag          | Description                          | Default                                    |
@@ -72,6 +42,12 @@ in-cluster configuration:
 | `PHYSICAL_ENVIRONMENT` | Physical environment name | `""`                                                 |
 | `CLUSTER`              | Cluster name              | `""`                                                 |
 | `API_TOKEN`            | API authentication token  | `""`                                                 |
+
+> [!NOTE]
+> The provisioned API token must have `artifact-metadata: write` with
+> access to all relevant GitHub repositories (i.e all GitHub
+> repositories that produces container images that are loaded into the
+> cluster.
 
 ### Template Variables
 
@@ -101,11 +77,7 @@ which includes:
 
 ### Deploy to Kubernetes
 
-```bash
-# Build and push the container image
-docker build -t your-registry/deployment-tracker:latest .
-docker push your-registry/deployment-tracker:latest
-
+```
 # Update the image in the manifest, then apply
 kubectl apply -f deploy/manifest.yaml
 ```
@@ -155,11 +127,11 @@ If you only need to monitor a single namespace, you can modify the manifest to u
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │  Kubernetes     │     │   Controller    │     │   GitHub API    │
 │  API Server     │────▶│                 │────▶│                 │
-│                 │     │  ┌───────────┐  │     │  /orgs/{org}/   │
-│  Pod Events     │     │  │ Informer  │  │     │  artifacts/     │
-│  - Add          │     │  └─────┬─────┘  │     │  metadata/      │
-│  - Update       │     │        │        │     │  deployment-    │
-│  - Delete       │     │  ┌─────▼─────┐  │     │  record         │
+│                 │     │  ┌───────────┐  │     │                 │
+│  Pod Events     │     │  │ Informer  │  │     │                 │
+│  - Add          │     │  └─────┬─────┘  │     │                 │
+│  - Update       │     │        │        │     │                 │
+│  - Delete       │     │  ┌─────▼─────┐  │     │                 │
 │                 │     │  │ Workqueue │  │     │                 │
 │                 │     │  └─────┬─────┘  │     │                 │
 │                 │     │        │        │     │                 │
@@ -168,22 +140,3 @@ If you only need to monitor a single namespace, you can modify the manifest to u
 │                 │     │  └───────────┘  │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
-
-## API Payload
-
-The controller POSTs JSON payloads to `{BASE_URL}/orgs/{ORG}/artifacts/metadata/deployment-record`:
-
-```json
-{
-  "name": "nginx",
-  "digest": "sha256:abc123...",
-  "version": "1.21",
-  "logical_environment": "staging",
-  "physical_environment": "us-east-1",
-  "cluster": "prod-cluster",
-  "status": "deployed",
-  "deployment_name": "default/nginx/nginx"
-}
-```
-
-The `status` field is either `deployed` (for pod creation) or `decommissioned` (for pod deletion).
