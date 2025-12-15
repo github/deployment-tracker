@@ -1,18 +1,19 @@
-package deployment_record
+package deploymentrecord
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 )
 
-// ClientOption is a function that configures the Client
+// ClientOption is a function that configures the Client.
 type ClientOption func(*Client)
 
-// Client is an API client for posting deployment records
+// Client is an API client for posting deployment records.
 type Client struct {
 	baseURL    string
 	org        string
@@ -21,8 +22,8 @@ type Client struct {
 	apiToken   string
 }
 
-// NewClient creates a new API client with the given base URL and organization.
-// Use ClientOption functions to customize timeout and retries.
+// NewClient creates a new API client with the given base URL and
+// organization.
 func NewClient(baseURL, org string, opts ...ClientOption) *Client {
 	c := &Client{
 		baseURL: baseURL,
@@ -40,31 +41,32 @@ func NewClient(baseURL, org string, opts ...ClientOption) *Client {
 	return c
 }
 
-// WithTimeout sets the HTTP client timeout in seconds
+// WithTimeout sets the HTTP client timeout in seconds.
 func WithTimeout(seconds int) ClientOption {
 	return func(c *Client) {
 		c.httpClient.Timeout = time.Duration(seconds) * time.Second
 	}
 }
 
-// WithRetries sets the number of retries for failed requests
+// WithRetries sets the number of retries for failed requests.
 func WithRetries(retries int) ClientOption {
 	return func(c *Client) {
 		c.retries = retries
 	}
 }
 
-// WithAPIToken sets the API token for Bearer authentication
+// WithAPIToken sets the API token for Bearer authentication.
 func WithAPIToken(token string) ClientOption {
 	return func(c *Client) {
 		c.apiToken = token
 	}
 }
 
-// PostOne posts a single deployment record to the API
+// PostOne posts a single deployment record to the GitHub deployment
+// records API.
 func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	if record == nil {
-		return fmt.Errorf("record cannot be nil")
+		return errors.New("record cannot be nil")
 	}
 
 	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
@@ -110,7 +112,8 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 
-		// Don't retry on client errors (4xx) except for 429 (rate limit)
+		// Don't retry on client errors (4xx) except for 429
+		// (rate limit)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
 			return lastErr
 		}

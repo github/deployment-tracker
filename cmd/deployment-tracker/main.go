@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/github/deployment-tracker/pkg/deployment_record"
+	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -28,7 +29,7 @@ var tmplDN = "{{deploymentName}}"
 var tmplCN = "{{containerName}}"
 var defaultTemplate = tmplNS + "/" + tmplDN + "/" + tmplCN
 
-// Config holds the global configuration for the controller
+// Config holds the global configuration for the controller.
 type Config struct {
 	Template            string
 	LogicalEnvironment  string
@@ -39,19 +40,19 @@ type Config struct {
 	Org                 string
 }
 
-// PodEvent represents a pod event to be processed
+// PodEvent represents a pod event to be processed.
 type PodEvent struct {
 	Key       string
 	EventType string
 	Pod       *corev1.Pod
 }
 
-// Controller is the Kubernetes controller for tracking deployments
+// Controller is the Kubernetes controller for tracking deployments.
 type Controller struct {
 	clientset   kubernetes.Interface
 	podInformer cache.SharedIndexInformer
 	workqueue   workqueue.TypedRateLimitingInterface[PodEvent]
-	apiClient   *deployment_record.Client
+	apiClient   *deploymentrecord.Client
 	cfg         *Config
 }
 
@@ -87,7 +88,6 @@ func main() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -111,8 +111,10 @@ func main() {
 	fmt.Println("Starting deployment-tracker controller")
 	if err := controller.Run(ctx, workers); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running controller: %v\n", err)
+		cancel()
 		os.Exit(1)
 	}
+	cancel()
 }
 
 func createConfig(kubeconfig string) (*rest.Config, error) {
@@ -135,7 +137,7 @@ func createConfig(kubeconfig string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", homeDir+"/.kube/config")
 }
 
-// NewController creates a new deployment tracker controller
+// NewController creates a new deployment tracker controller.
 func NewController(clientset kubernetes.Interface, namespace string, cfg *Config) *Controller {
 	// Create informer factory
 	var factory informers.SharedInformerFactory
@@ -157,11 +159,11 @@ func NewController(clientset kubernetes.Interface, namespace string, cfg *Config
 	)
 
 	// Create API client with optional token
-	clientOpts := []deployment_record.ClientOption{}
+	clientOpts := []deploymentrecord.ClientOption{}
 	if cfg.APIToken != "" {
-		clientOpts = append(clientOpts, deployment_record.WithAPIToken(cfg.APIToken))
+		clientOpts = append(clientOpts, deploymentrecord.WithAPIToken(cfg.APIToken))
 	}
-	apiClient := deployment_record.NewClient(cfg.BaseURL, cfg.Org, clientOpts...)
+	apiClient := deploymentrecord.NewClient(cfg.BaseURL, cfg.Org, clientOpts...)
 
 	controller := &Controller{
 		clientset:   clientset,
@@ -172,9 +174,15 @@ func NewController(clientset kubernetes.Interface, namespace string, cfg *Config
 	}
 
 	// Add event handlers to the informer
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			pod := obj.(*corev1.Pod)
+	_, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				fmt.Printf("error: invalid object returned: %+v\n",
+					obj)
+				return
+			}
+
 			// Only process pods that are running
 			if pod.Status.Phase == corev1.PodRunning {
 				key, err := cache.MetaNamespaceKeyFunc(obj)
@@ -183,9 +191,19 @@ func NewController(clientset kubernetes.Interface, namespace string, cfg *Config
 				}
 			}
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			oldPod := oldObj.(*corev1.Pod)
-			newPod := newObj.(*corev1.Pod)
+		UpdateFunc: func(oldObj, newObj any) {
+			oldPod, ok := oldObj.(*corev1.Pod)
+			if !ok {
+				fmt.Printf("error: invalid object returned: %+v\n",
+					oldObj)
+				return
+			}
+			newPod, ok := newObj.(*corev1.Pod)
+			if !ok {
+				fmt.Printf("error: invalid object returned: %+v\n",
+					newObj)
+				return
+			}
 
 			// Skip if pod is being deleted
 			if newPod.DeletionTimestamp != nil {
@@ -200,7 +218,7 @@ func NewController(clientset kubernetes.Interface, namespace string, cfg *Config
 				}
 			}
 		},
-		DeleteFunc: func(obj interface{}) {
+		DeleteFunc: func(obj any) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				// Handle deleted final state unknown
@@ -220,10 +238,14 @@ func NewController(clientset kubernetes.Interface, namespace string, cfg *Config
 		},
 	})
 
+	if err != nil {
+		fmt.Printf("ERROR: failed to add event handlers: %s\n", err)
+	}
+
 	return controller
 }
 
-// Run starts the controller
+// Run starts the controller.
 func (c *Controller) Run(ctx context.Context, workers int) error {
 	defer runtime.HandleCrash()
 	defer c.workqueue.ShutDown()
@@ -236,7 +258,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	// Wait for the cache to be synced
 	fmt.Println("Waiting for informer cache to sync")
 	if !cache.WaitForCacheSync(ctx.Done(), c.podInformer.HasSynced) {
-		return fmt.Errorf("timed out waiting for caches to sync")
+		return errors.New("timed out waiting for caches to sync")
 	}
 
 	fmt.Printf("Starting %d workers\n", workers)
@@ -254,13 +276,13 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	return nil
 }
 
-// runWorker runs a worker to process items from the work queue
+// runWorker runs a worker to process items from the work queue.
 func (c *Controller) runWorker(ctx context.Context) {
 	for c.processNextItem(ctx) {
 	}
 }
 
-// processNextItem processes the next item from the work queue
+// processNextItem processes the next item from the work queue.
 func (c *Controller) processNextItem(ctx context.Context) bool {
 	event, shutdown := c.workqueue.Get()
 	if shutdown {
@@ -281,7 +303,7 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 	return true
 }
 
-// processEvent processes a single pod event
+// processEvent processes a single pod event.
 func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	timestamp := time.Now().Format(time.RFC3339)
 
@@ -290,9 +312,9 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		return nil
 	}
 
-	status := deployment_record.StatusDeployed
+	status := deploymentrecord.StatusDeployed
 	if event.EventType == "DELETED" {
-		status = deployment_record.StatusDecommissioned
+		status = deploymentrecord.StatusDecommissioned
 	}
 
 	var lastErr error
@@ -314,7 +336,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	return lastErr
 }
 
-// recordContainer records a single container's deployment info
+// recordContainer records a single container's deployment info.
 func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType, timestamp string) error {
 	dn := getARDeploymentName(pod, container, c.cfg.Template)
 	digest := getContainerDigest(pod, container.Name)
@@ -324,10 +346,10 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	}
 
 	// Extract image name and tag
-	imageName, version := deployment_record.ExtractImageName(container.Image)
+	imageName, version := deploymentrecord.ExtractImageName(container.Image)
 
 	// Create deployment record
-	record := deployment_record.NewDeploymentRecord(
+	record := deploymentrecord.NewDeploymentRecord(
 		imageName,
 		digest,
 		version,
@@ -356,13 +378,13 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 // the cluster.
 func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string {
 	res := tmpl
-	res = strings.Replace(res, tmplNS, p.Namespace, -1)
-	res = strings.Replace(res, tmplDN, getDeploymentName(p), -1)
-	res = strings.Replace(res, tmplCN, c.Name, -1)
+	res = strings.ReplaceAll(res, tmplNS, p.Namespace)
+	res = strings.ReplaceAll(res, tmplDN, getDeploymentName(p))
+	res = strings.ReplaceAll(res, tmplCN, c.Name)
 	return res
 }
 
-// getContainerDigest extracts the image digest from the container status
+// getContainerDigest extracts the image digest from the container status.
 func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	// Check regular container statuses
 	for _, status := range pod.Status.ContainerStatuses {
@@ -381,8 +403,9 @@ func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	return ""
 }
 
-// extractDigest extracts the digest from an ImageID
-// ImageID format is typically: docker-pullable://image@sha256:abc123... or docker://sha256:abc123...
+// extractDigest extracts the digest from an ImageID.
+// ImageID format is typically: docker-pullable://image@sha256:abc123...
+// or docker://sha256:abc123...
 func extractDigest(imageID string) string {
 	if imageID == "" {
 		return ""
@@ -408,7 +431,8 @@ func extractDigest(imageID string) string {
 	return imageID
 }
 
-// getDeploymentName returns the deployment name for a pod, if it belongs to one
+// getDeploymentName returns the deployment name for a pod, if it belongs
+// to one.
 func getDeploymentName(pod *corev1.Pod) string {
 	// Pods created by Deployments are owned by ReplicaSets
 	// The ReplicaSet name follows the pattern: <deployment-name>-<hash>
@@ -424,5 +448,5 @@ func getDeploymentName(pod *corev1.Pod) string {
 			return rsName
 		}
 	}
-	return "" // Pod doesn't belong to a deployment
+	return ""
 }

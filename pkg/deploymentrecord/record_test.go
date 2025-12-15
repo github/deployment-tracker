@@ -1,4 +1,4 @@
-package deployment_record
+package deploymentrecord
 
 import "testing"
 
