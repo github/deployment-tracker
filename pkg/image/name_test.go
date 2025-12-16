@@ -1,8 +1,10 @@
-package deploymentrecord
+package image
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestExtractImageName(t *testing.T) {
+func TestExtractName(t *testing.T) {
 	tests := []struct {
 		name        string
 		image       string
@@ -97,12 +99,12 @@ func TestExtractImageName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resultImg, resultTag := ExtractImageName(tt.image)
+			resultImg, resultTag := ExtractName(tt.image)
 			if resultImg != tt.expectedImg {
-				t.Errorf("ExtractImageName(%q) image = %q, expected %q", tt.image, resultImg, tt.expectedImg)
+				t.Errorf("ExtractName(%q) image = %q, expected %q", tt.image, resultImg, tt.expectedImg)
 			}
 			if resultTag != tt.expectedTag {
-				t.Errorf("ExtractImageName(%q) tag = %q, expected %q", tt.image, resultTag, tt.expectedTag)
+				t.Errorf("ExtractName(%q) tag = %q, expected %q", tt.image, resultTag, tt.expectedTag)
 			}
 		})
 	}
