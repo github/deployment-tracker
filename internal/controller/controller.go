@@ -346,7 +346,7 @@ func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string 
 }
 
 // getContainerDigest extracts the image digest from the container status.
-// The spec only contains the desired state, so any resoled digests must
+// The spec only contains the desired state, so any resolved digests must
 // be pulled from the status field.
 func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	// Check regular container statuses
