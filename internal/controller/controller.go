@@ -272,7 +272,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 // getARDeploymentName converts the pod's metadata into the correct format
 // for the deployment name for the artifact registry (this is not the same
 // as the K8s deployment's name!
-// The deployent name must unique within logical, physical environment and
+// The deployment name must unique within logical, physical environment and
 // the cluster.
 func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string {
 	res := tmpl
