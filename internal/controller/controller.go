@@ -23,7 +23,6 @@ import (
 type PodEvent struct {
 	Key       string
 	EventType string
-	Pod       *corev1.Pod
 }
 
 // Controller is the Kubernetes controller for tracking deployments.
@@ -99,7 +98,6 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 					queue.Add(PodEvent{
 						Key:       key,
 						EventType: "CREATED",
-						Pod:       pod.DeepCopy(),
 					})
 				}
 			}
@@ -137,20 +135,19 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 					queue.Add(PodEvent{
 						Key:       key,
 						EventType: "CREATED",
-						Pod:       newPod.DeepCopy(),
 					})
 				}
 			}
 		},
 		DeleteFunc: func(obj any) {
-			pod, ok := obj.(*corev1.Pod)
+			_, ok := obj.(*corev1.Pod)
 			if !ok {
 				// Handle deleted final state unknown
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				pod, ok = tombstone.Obj.(*corev1.Pod)
+				_, ok = tombstone.Obj.(*corev1.Pod)
 				if !ok {
 					return
 				}
@@ -164,7 +161,6 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 				queue.Add(PodEvent{
 					Key:       key,
 					EventType: "DELETED",
-					Pod:       pod.DeepCopy(),
 				})
 			}
 		},
@@ -243,8 +239,25 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 
 // processEvent processes a single pod event.
 func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
-	pod := event.Pod
-	if pod == nil {
+	// Get the pod from the informer's cache
+	obj, exists, err := c.podInformer.GetIndexer().GetByKey(event.Key)
+	if err != nil {
+		slog.Error("Failed to get pod from cache",
+			"key", event.Key,
+			"error", err,
+		)
+		return nil
+	}
+	if !exists {
+		// Pod no longer exists in cache, skip processing
+		return nil
+	}
+
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		slog.Error("Invalid object type in cache",
+			"key", event.Key,
+		)
 		return nil
 	}
 
@@ -333,6 +346,8 @@ func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string 
 }
 
 // getContainerDigest extracts the image digest from the container status.
+// The spec only contains the desired state, so any resolved digests must
+// be pulled from the status field.
 func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	// Check regular container statuses
 	for _, status := range pod.Status.ContainerStatuses {

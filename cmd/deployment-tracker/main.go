@@ -61,7 +61,7 @@ func main() {
 		os.Exit(1)
 	}
 	if cntrlCfg.Organization == "" {
-		slog.Error("Organiation is required")
+		slog.Error("Organization is required")
 		os.Exit(1)
 	}
 
