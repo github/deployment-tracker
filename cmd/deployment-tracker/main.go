@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -38,6 +38,10 @@ func main() {
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
 	flag.Parse()
 
+	// init logging
+	opts := slog.HandlerOptions{Level: slog.LevelInfo}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &opts)))
+
 	var cntrlCfg = controller.Config{
 		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
 		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
@@ -45,31 +49,33 @@ func main() {
 		Cluster:             os.Getenv("CLUSTER"),
 		APIToken:            getEnvOrDefault("API_TOKEN", ""),
 		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
-		Org:                 os.Getenv("ORG"),
+		Organization:        os.Getenv("GITHUB_ORG"),
 	}
 
 	if cntrlCfg.LogicalEnvironment == "" {
-		fmt.Fprint(os.Stderr, "Logical environment is required\n")
+		slog.Error("Logical environment is required")
 		os.Exit(1)
 	}
 	if cntrlCfg.Cluster == "" {
-		fmt.Fprint(os.Stderr, "Cluster is required\n")
+		slog.Error("Cluster is required")
 		os.Exit(1)
 	}
-	if cntrlCfg.Org == "" {
-		fmt.Fprint(os.Stderr, "Org is required\n")
+	if cntrlCfg.Organization == "" {
+		slog.Error("Organiation is required")
 		os.Exit(1)
 	}
 
 	k8sCfg, err := createK8sConfig(kubeconfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating Kubernetes config: %v\n", err)
+		slog.Error("Failed to create Kubernetes config",
+			"error", err)
 		os.Exit(1)
 	}
 
 	clientset, err := kubernetes.NewForConfig(k8sCfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating Kubernetes client: %v\n", err)
+		slog.Error("Error creating Kubernetes client",
+			"error", err)
 		os.Exit(1)
 	}
 
@@ -79,15 +85,16 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Println("\nShutting down...")
+		slog.Info("Shutting down...")
 		cancel()
 	}()
 
 	cntrl := controller.New(clientset, namespace, &cntrlCfg)
 
-	fmt.Println("Starting deployment-tracker controller")
+	slog.Info("Starting deployment-tracker controller")
 	if err := cntrl.Run(ctx, workers); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running controller: %v\n", err)
+		slog.Error("Error running controller",
+			"error", err)
 		cancel()
 		os.Exit(1)
 	}

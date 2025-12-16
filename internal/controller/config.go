@@ -17,5 +17,5 @@ type Config struct {
 	Cluster             string
 	APIToken            string
 	BaseURL             string
-	Org                 string
+	Organization        string
 }
