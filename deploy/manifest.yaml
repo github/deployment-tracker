@@ -55,8 +55,8 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: DN_TEMPLATE
-              value: "{{namespace}}_{{deploymentName}}_{{containerName}}"
-            - name: ORG
+              value: "{{namespace}}/{{deploymentName}}/{{containerName}}"
+            - name: GITHUB_ORG
               value: "test-org"
             - name: LOGICAL_ENVIRONMENT
               value: "staging"
