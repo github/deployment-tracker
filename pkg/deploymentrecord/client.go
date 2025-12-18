@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/github/deployment-tracker/pkg/metrics"
 )
 
 // ClientOption is a function that configures the Client.
@@ -79,10 +82,12 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	bodyReader := bytes.NewReader(body)
 
 	var lastErr error
-	for attempt := 0; attempt <= c.retries; attempt++ {
+	// The first attempt is not a retry!
+	for attempt := range c.retries + 1 {
 		if attempt > 0 {
 			// Wait before retry with exponential backoff
-			time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+			time.Sleep(time.Duration((attempt)*100) *
+				time.Millisecond)
 		}
 
 		// Reset reader position for retries
@@ -98,26 +103,43 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			req.Header.Set("Authorization", "Bearer "+c.apiToken)
 		}
 
+		start := time.Now()
 		resp, err := c.httpClient.Do(req)
+		dur := time.Since(start)
+		metrics.PostDeploymentRecordTimer.Observe(dur.Seconds())
 		if err != nil {
-			lastErr = fmt.Errorf("request failed: %w", err)
+			lastErr = fmt.Errorf("post request failed: %w", err)
+
+			slog.Warn("recoverable error, re-trying",
+				"attempt", attempt,
+				"retries", c.retries,
+				"error", lastErr)
+			metrics.PostDeploymentRecordSoftFail.Inc()
 			continue
 		}
-
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			metrics.PostDeploymentRecordOk.Inc()
 			return nil
 		}
+		metrics.PostDeploymentRecordSoftFail.Inc()
 
 		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 
 		// Don't retry on client errors (4xx) except for 429
 		// (rate limit)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
+			slog.Error("irrecoverable error, aborting",
+				"attempt", attempt,
+				"error", lastErr)
 			return lastErr
 		}
 	}
 
+	metrics.PostDeploymentRecordHardFail.Inc()
+	slog.Error("all retries exhauseted",
+		"count", c.retries,
+		"error", lastErr)
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
 }

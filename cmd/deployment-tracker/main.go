@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"flag"
+	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/github/deployment-tracker/internal/controller"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -28,17 +32,20 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 func main() {
 	var (
-		kubeconfig string
-		namespace  string
-		workers    int
+		kubeconfig  string
+		namespace   string
+		workers     int
+		metricsPort string
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig file (uses in-cluster config if not set)")
 	flag.StringVar(&namespace, "namespace", "", "namespace to monitor (empty for all namespaces)")
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
+	flag.StringVar(&metricsPort, "metrics-port", "9090", "port to listen to for metrics")
 	flag.Parse()
 
 	// init logging
+	log.SetFlags(log.LstdFlags | log.Lshortfile | log.LUTC)
 	opts := slog.HandlerOptions{Level: slog.LevelInfo}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &opts)))
 
@@ -78,6 +85,26 @@ func main() {
 			"error", err)
 		os.Exit(1)
 	}
+
+	// Start the metrics server
+	go func() {
+		var mm = http.NewServeMux()
+		mm.Handle("/metrics", promhttp.Handler())
+
+		var promSrv = &http.Server{
+			Addr:              ":" + metricsPort,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+			Handler:           mm,
+		}
+		slog.Info("starting Prometheus metrics server",
+			"url", promSrv.Addr)
+		if err := promSrv.ListenAndServe(); err != nil {
+			slog.Error("failed to start metrics server",
+				"error", err)
+		}
+	}()
 
 	ctx, cancel := context.WithCancel(context.Background())
 

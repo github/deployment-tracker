@@ -36,11 +36,12 @@ deployment records to GitHub's artifact metadata API.
 
 ## Command Line Options
 
-| Flag          | Description                          | Default                                    |
-|---------------|--------------------------------------|--------------------------------------------|
-| `-kubeconfig` | Path to kubeconfig file              | Uses in-cluster config or `~/.kube/config` |
-| `-namespace`  | Namespace to monitor (empty for all) | `""` (all namespaces)                      |
-| `-workers`    | Number of worker goroutines          | `2`                                        |
+| Flag            | Description                          | Default                                    |
+|-----------------|--------------------------------------|--------------------------------------------|
+| `-kubeconfig`   | Path to kubeconfig file              | Uses in-cluster config or `~/.kube/config` |
+| `-namespace`    | Namespace to monitor (empty for all) | `""` (all namespaces)                      |
+| `-workers`      | Number of worker goroutines          | `2`                                        |
+| `-metrics-port` | Port number for Prometheus metrics   | 9090                                       |
 
 ## Environment Variables
 
@@ -67,14 +68,6 @@ The `DN_TEMPLATE` supports the following placeholders:
 - `{{deploymentName}}` - Name of the owning Deployment
 - `{{containerName}}` - Container name
 
-## Output Format
-
-```
-[2024-01-15T10:30:00Z] OK CREATED name=nginx deployment_name=default/nginx/nginx digest=sha256:abc123... status=deployed
-[2024-01-15T10:30:10Z] OK DELETED name=nginx deployment_name=default/nginx/nginx digest=sha256:abc123... status=decommissioned
-[2024-01-15T10:30:15Z] FAILED CREATED name=myapp deployment_name=default/myapp/app error=connection refused
-```
-
 ## Kubernetes Deployment
 
 A complete deployment manifest is provided in `deploy/manifest.yaml`
@@ -85,23 +78,6 @@ which includes:
 - **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
-
-### Deploy to Kubernetes
-
-```
-# Update the image in the manifest, then apply
-kubectl apply -f deploy/manifest.yaml
-```
-
-### View Logs
-
-```bash
-# Follow logs from the controller
-kubectl logs -f -n deployment-tracker deployment/deployment-tracker
-
-# View recent logs
-kubectl logs -n deployment-tracker deployment/deployment-tracker --tail=100
-```
 
 ### Verify Deployment
 
@@ -151,3 +127,30 @@ If you only need to monitor a single namespace, you can modify the manifest to u
 │                 │     │  └───────────┘  │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
+
+## Metrics
+
+The deployment tracker provides Prometheus metrics, exposed via `http`
+at `:9090/metrics`.  The port can be configured with the
+`-metrics-port` flag (`9090` is the default).
+
+The metrics exposed beyond the default Prometheus metrics are:
+
+* `deptracker_events_processed_ok`: the total number of successful
+  events process from the k8s API server. The metric is tagged the
+  event type (`CRETE`/`DELETED`).
+* `deptracker_events_processed_failed`: the total number of failed
+  events process from the k8s API server. The metric is tagged the
+  event type (`CRETE`/`DELETED`).
+* `deptracker_events_processed_timer`: the processing time for each
+  event. The metrics is tagged with the status of the event processing
+  (`ok`/`failed`).
+* `deptracker_post_deployment_record_timer`: the duration of the
+  outgoing HTTP POST to upload the deployment record.
+* `deptracker_post_record_ok`: the number of successful deployment
+  record uploads.
+* `deptracker_post_record_soft_fail`: the number of recoverable failed
+  attempts to upload the deployment record.
+* `deptracker_post_record_hard_fail`: the number of failures to
+  persist a record via the HTTP API (either a irrecoverable error or
+  all retries are exhausted).
