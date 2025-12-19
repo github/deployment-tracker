@@ -123,7 +123,6 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			metrics.PostDeploymentRecordOk.Inc()
 			return nil
 		}
-		metrics.PostDeploymentRecordSoftFail.Inc()
 
 		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 
@@ -136,6 +135,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 				"error", lastErr)
 			return lastErr
 		}
+		metrics.PostDeploymentRecordSoftFail.Inc()
 	}
 
 	metrics.PostDeploymentRecordHardFail.Inc()
