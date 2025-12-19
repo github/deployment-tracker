@@ -152,5 +152,5 @@ The metrics exposed beyond the default Prometheus metrics are:
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
   attempts to upload the deployment record.
 * `deptracker_post_record_hard_fail`: the number of failures to
-  persist a record via the HTTP API (either a irrecoverable error or
+  persist a record via the HTTP API (either an irrecoverable error or
   all retries are exhausted).
