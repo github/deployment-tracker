@@ -9,6 +9,7 @@ import (
 
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/github/deployment-tracker/pkg/image"
+	"github.com/github/deployment-tracker/pkg/metrics"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -123,7 +124,11 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 				return
 			}
 
-			// Only process if pod just became running
+			// Only process if pod just became running.
+			// We need to process this as often when a container
+			// is created, the spec does not contain the digest
+			// so we need to wait for the status field to be
+			// populated from where we can get the digest.
 			if oldPod.Status.Phase != corev1.PodRunning &&
 				newPod.Status.Phase == corev1.PodRunning {
 				key, err := cache.MetaNamespaceKeyFunc(newObj)
@@ -221,11 +226,19 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 	}
 	defer c.workqueue.Done(event)
 
+	start := time.Now()
 	err := c.processEvent(ctx, event)
+	dur := time.Since(start)
+
 	if err == nil {
+		metrics.EventsProcessedOk.WithLabelValues(event.EventType).Inc()
+		metrics.EventsProcessedTimer.WithLabelValues("ok").Observe(dur.Seconds())
+
 		c.workqueue.Forget(event)
 		return true
 	}
+	metrics.EventsProcessedTimer.WithLabelValues("failed").Observe(dur.Seconds())
+	metrics.EventsProcessedFailed.WithLabelValues(event.EventType).Inc()
 
 	// Requeue on error with rate limiting
 	slog.Error("Failed to process event, requeuing",
