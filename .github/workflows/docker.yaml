@@ -15,6 +15,7 @@ jobs:
       id-token: write
       attestations: write
       packages: write
+      artifact-metadata: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository }}
