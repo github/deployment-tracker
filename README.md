@@ -137,11 +137,11 @@ at `:9090/metrics`.  The port can be configured with the
 The metrics exposed beyond the default Prometheus metrics are:
 
 * `deptracker_events_processed_ok`: the total number of successful
-  events process from the k8s API server. The metric is tagged the
-  event type (`CRETE`/`DELETED`).
+  events processed from the k8s API server. The metric is tagged the
+  event type (`CREATED`/`DELETED`).
 * `deptracker_events_processed_failed`: the total number of failed
-  events process from the k8s API server. The metric is tagged the
-  event type (`CRETE`/`DELETED`).
+  events processed from the k8s API server. The metric is tagged the
+  event type (`CREATED`/`DELETED`).
 * `deptracker_events_processed_timer`: the processing time for each
   event. The metrics is tagged with the status of the event processing
   (`ok`/`failed`).

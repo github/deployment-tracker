@@ -138,7 +138,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	}
 
 	metrics.PostDeploymentRecordHardFail.Inc()
-	slog.Error("all retries exhauseted",
+	slog.Error("all retries exhausted",
 		"count", c.retries,
 		"error", lastErr)
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
