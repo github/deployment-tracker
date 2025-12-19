@@ -143,7 +143,7 @@ The metrics exposed beyond the default Prometheus metrics are:
   events processed from the k8s API server. The metric is tagged the
   event type (`CREATED`/`DELETED`).
 * `deptracker_events_processed_timer`: the processing time for each
-  event. The metrics is tagged with the status of the event processing
+  event. The metric is tagged with the status of the event processing
   (`ok`/`failed`).
 * `deptracker_post_deployment_record_timer`: the duration of the
   outgoing HTTP POST to upload the deployment record.
