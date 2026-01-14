@@ -154,3 +154,9 @@ The metrics exposed beyond the default Prometheus metrics are:
 * `deptracker_post_record_hard_fail`: the number of failures to
   persist a record via the HTTP API (either an irrecoverable error or
   all retries are exhausted).
+
+## License
+
+This project is licensed under the terms of the MIT open source
+license. Please refer to the [LICENSE](./LICENSE.txt) for the full
+terms.
