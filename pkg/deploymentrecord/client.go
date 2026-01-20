@@ -65,6 +65,19 @@ func WithAPIToken(token string) ClientOption {
 	}
 }
 
+// ClientError represents a client error that can not be retried.
+type ClientError struct {
+	err error
+}
+
+func (c *ClientError) Error() string {
+	return fmt.Sprintf("client_error: %s", c.err.Error())
+}
+
+func (c *ClientError) Unwrap() error {
+	return c.err
+}
+
 // PostOne posts a single deployment record to the GitHub deployment
 // records API.
 func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
@@ -129,11 +142,10 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		// Don't retry on client errors (4xx) except for 429
 		// (rate limit)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
-			metrics.PostDeploymentRecordHardFail.Inc()
-			slog.Error("irrecoverable error, aborting",
+			slog.Warn("client error, aborting",
 				"attempt", attempt,
 				"error", lastErr)
-			return lastErr
+			return &ClientError{err: lastErr}
 		}
 		metrics.PostDeploymentRecordSoftFail.Inc()
 	}
