@@ -64,4 +64,12 @@ var (
 			Help: "The total number of hard post failures",
 		},
 	)
+
+	//nolint: revive
+	PostDeploymentRecordClientError = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_client_error",
+			Help: "The total number of client failures",
+		},
+	)
 )

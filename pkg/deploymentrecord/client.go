@@ -142,6 +142,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		// Don't retry on client errors (4xx) except for 429
 		// (rate limit)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
+			metrics.PostDeploymentRecordClientError.Inc()
 			slog.Warn("client error, aborting",
 				"attempt", attempt,
 				"error", lastErr)
