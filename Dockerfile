@@ -1,5 +1,5 @@
  # 1.25.5-alpine3.23
-FROM golang@sha256:26111811bc967321e7b6f852e914d14bede324cd1accb7f81811929a6a57fea9 AS builder
+FROM golang@sha256:d9b2e14101f27ec8d09674cd01186798d227bb0daec90e032aeb1cd22ac0f029 AS builder
 
 WORKDIR /app
 COPY go.mod go.sum ./
