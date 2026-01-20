@@ -323,6 +323,20 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
+		// Make sure to not retry on client error messages
+		var clientErr *deploymentrecord.ClientError
+		if errors.As(err, &clientErr) {
+			slog.Warn("Failed to post record",
+				"event_type", eventType,
+				"name", record.Name,
+				"deployment_name", record.DeploymentName,
+				"status", record.Status,
+				"digest", record.Digest,
+				"error", err,
+			)
+			return nil
+		}
+
 		slog.Error("Failed to post record",
 			"event_type", eventType,
 			"name", record.Name,
