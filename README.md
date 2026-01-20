@@ -155,7 +155,7 @@ The metrics exposed beyond the default Prometheus metrics are:
   persist a record via the HTTP API (either an irrecoverable error or
   all retries are exhausted).
 * `deptracker_post_record_client_error`: the number of client errors,
-  there are never retried nor reprocessed.
+  these are never retried nor reprocessed.
 
 ## License
 

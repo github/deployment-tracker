@@ -69,7 +69,7 @@ var (
 	PostDeploymentRecordClientError = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_client_error",
-			Help: "The total number of client failures",
+			Help: "The total number of non-retryable client failures",
 		},
 	)
 )
