@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -44,6 +45,13 @@ func main() {
 	flag.StringVar(&metricsPort, "metrics-port", "9090", "port to listen to for metrics")
 	flag.Parse()
 
+	// Validate worker count
+	if workers < 1 || workers > 100 {
+		slog.Error("Invalid worker count, must be between 1 and 100",
+			"workers", workers)
+		os.Exit(1)
+	}
+
 	// init logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile | log.LUTC)
 	opts := slog.HandlerOptions{Level: slog.LevelInfo}
@@ -57,6 +65,13 @@ func main() {
 		APIToken:            getEnvOrDefault("API_TOKEN", ""),
 		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
 		Organization:        os.Getenv("GITHUB_ORG"),
+	}
+
+	if !controller.ValidTemplate(cntrlCfg.Template) {
+		slog.Error("Template must contain at least one placeholder",
+			"template", cntrlCfg.Template,
+			"valid_placeholders", []string{controller.TmplNS, controller.TmplDN, controller.TmplCN})
+		os.Exit(1)
 	}
 
 	if cntrlCfg.LogicalEnvironment == "" {
@@ -87,20 +102,20 @@ func main() {
 	}
 
 	// Start the metrics server
-	go func() {
-		var mm = http.NewServeMux()
-		mm.Handle("/metrics", promhttp.Handler())
+	var promSrv = &http.Server{
+		Addr:              ":" + metricsPort,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		Handler:           http.NewServeMux(),
+	}
+	promSrv.Handler.(*http.ServeMux).Handle("/metrics", promhttp.Handler())
 
-		var promSrv = &http.Server{
-			Addr:              ":" + metricsPort,
-			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      10 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
-			Handler:           mm,
-		}
+	go func() {
 		slog.Info("starting Prometheus metrics server",
 			"url", promSrv.Addr)
-		if err := promSrv.ListenAndServe(); err != nil {
+		if err := promSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("failed to start metrics server",
 				"error", err)
 		}
@@ -113,10 +128,24 @@ func main() {
 	go func() {
 		<-sigCh
 		slog.Info("Shutting down...")
+
+		// Gracefully shutdown the metrics server
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := promSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("failed to shutdown metrics server gracefully",
+				"error", err)
+		}
+
 		cancel()
 	}()
 
-	cntrl := controller.New(clientset, namespace, &cntrlCfg)
+	cntrl, err := controller.New(clientset, namespace, &cntrlCfg)
+	if err != nil {
+		slog.Error("Failed to create controller",
+			"error", err)
+		os.Exit(1)
+	}
 
 	slog.Info("Starting deployment-tracker controller")
 	if err := cntrl.Run(ctx, workers); err != nil {
@@ -144,6 +173,9 @@ func createK8sConfig(kubeconfig string) (*rest.Config, error) {
 	}
 
 	// Fall back to default kubeconfig location
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	}
 	return clientcmd.BuildConfigFromFlags("", homeDir+"/.kube/config")
 }

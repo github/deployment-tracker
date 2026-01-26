@@ -6,28 +6,59 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
+	"math/rand/v2"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/github/deployment-tracker/pkg/metrics"
+	"golang.org/x/time/rate"
 )
 
 // ClientOption is a function that configures the Client.
 type ClientOption func(*Client)
 
+// validOrgPattern validates organization names (alphanumeric, hyphens, underscores)
+var validOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // Client is an API client for posting deployment records.
 type Client struct {
-	baseURL    string
-	org        string
-	httpClient *http.Client
-	retries    int
-	apiToken   string
+	baseURL     string
+	org         string
+	httpClient  *http.Client
+	retries     int
+	apiToken    string
+	rateLimiter *rate.Limiter
 }
 
 // NewClient creates a new API client with the given base URL and
-// organization.
-func NewClient(baseURL, org string, opts ...ClientOption) *Client {
+// organization. Returns an error if the base URL is not HTTPS for
+// non-local hosts.
+func NewClient(baseURL, org string, opts ...ClientOption) (*Client, error) {
+	// Check if URL is local (allowed to use HTTP)
+	isLocal := strings.HasPrefix(baseURL, "http://localhost") ||
+		strings.HasPrefix(baseURL, "http://127.0.0.1") ||
+		strings.Contains(baseURL, ".svc.cluster.local")
+
+	// Reject non-HTTPS URLs for non-local hosts
+	if strings.HasPrefix(baseURL, "http://") && !isLocal {
+		return nil, fmt.Errorf("insecure URL not allowed: %s (use HTTPS for non-local hosts)", baseURL)
+	}
+
+	// Add https:// prefix if no scheme is provided
+	if !strings.HasPrefix(baseURL, "https://") && !strings.HasPrefix(baseURL, "http://") {
+		baseURL = "https://" + baseURL
+	}
+
+	// Validate organization name to prevent URL injection
+	if !validOrgPattern.MatchString(org) {
+		return nil, fmt.Errorf("invalid organization name: %s (must be alphanumeric, hyphens, or underscores)", org)
+	}
+
 	c := &Client{
 		baseURL: baseURL,
 		org:     org,
@@ -35,13 +66,15 @@ func NewClient(baseURL, org string, opts ...ClientOption) *Client {
 			Timeout: 5 * time.Second,
 		},
 		retries: 3,
+		// 20 req/sec with burst of 50
+		rateLimiter: rate.NewLimiter(rate.Limit(20), 50),
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 
-	return c
+	return c, nil
 }
 
 // WithTimeout sets the HTTP client timeout in seconds.
@@ -65,6 +98,13 @@ func WithAPIToken(token string) ClientOption {
 	}
 }
 
+// WithRateLimiter sets a custom rate limiter for API calls.
+func WithRateLimiter(rps float64, burst int) ClientOption {
+	return func(c *Client) {
+		c.rateLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+	}
+}
+
 // ClientError represents a client error that can not be retried.
 type ClientError struct {
 	err error
@@ -85,6 +125,11 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		return errors.New("record cannot be nil")
 	}
 
+	// Wait for rate limiter
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limiter wait failed: %w", err)
+	}
+
 	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
 
 	body, err := json.Marshal(record)
@@ -98,9 +143,20 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	// The first attempt is not a retry!
 	for attempt := range c.retries + 1 {
 		if attempt > 0 {
-			// Wait before retry with exponential backoff
-			time.Sleep(time.Duration(attempt*100) *
-				time.Millisecond)
+			backoff := time.Duration(math.Pow(2, float64(attempt))) * 100 * time.Millisecond
+			jitter := time.Duration(rand.Int64N(50)) * time.Millisecond
+			delay := backoff + jitter
+
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+
+			// Wait with context cancellation support
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+			}
 		}
 
 		// Reset reader position for retries
@@ -130,6 +186,9 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			metrics.PostDeploymentRecordSoftFail.Inc()
 			continue
 		}
+
+		// Drain and close response body to enable connection reuse
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
