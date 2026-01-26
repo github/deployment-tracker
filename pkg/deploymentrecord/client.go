@@ -22,7 +22,8 @@ import (
 // ClientOption is a function that configures the Client.
 type ClientOption func(*Client)
 
-// validOrgPattern validates organization names (alphanumeric, hyphens, underscores)
+// validOrgPattern validates organization names (alphanumeric, hyphens,
+// underscores).
 var validOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Client is an API client for posting deployment records.
@@ -143,7 +144,9 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	// The first attempt is not a retry!
 	for attempt := range c.retries + 1 {
 		if attempt > 0 {
-			backoff := time.Duration(math.Pow(2, float64(attempt))) * 100 * time.Millisecond
+			backoff := time.Duration(math.Pow(2,
+				float64(attempt))) * 100 * time.Millisecond
+			//nolint:gosec
 			jitter := time.Duration(rand.Int64N(50)) * time.Millisecond
 			delay := backoff + jitter
 

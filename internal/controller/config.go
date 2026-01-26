@@ -24,6 +24,8 @@ type Config struct {
 	Organization        string
 }
 
+// ValidTemplate verifies that at least one placeholder is present
+// in the provided template t.
 func ValidTemplate(t string) bool {
 	hasPlaceholder := strings.Contains(t, TmplNS) ||
 		strings.Contains(t, TmplDN) ||
