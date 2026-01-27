@@ -1,5 +1,9 @@
 package controller
 
+import (
+	"strings"
+)
+
 const (
 	// TmplNS is the meta variable for the k8s namespace.
 	TmplNS = "{{namespace}}"
@@ -18,4 +22,14 @@ type Config struct {
 	APIToken            string
 	BaseURL             string
 	Organization        string
+}
+
+// ValidTemplate verifies that at least one placeholder is present
+// in the provided template t.
+func ValidTemplate(t string) bool {
+	hasPlaceholder := strings.Contains(t, TmplNS) ||
+		strings.Contains(t, TmplDN) ||
+		strings.Contains(t, TmplCN)
+
+	return hasPlaceholder
 }

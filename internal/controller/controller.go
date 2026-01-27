@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -36,7 +37,7 @@ type Controller struct {
 }
 
 // New creates a new deployment tracker controller.
-func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Controller {
+func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Controller, error) {
 	// Create informer factory
 	var factory informers.SharedInformerFactory
 	if namespace == "" {
@@ -63,11 +64,14 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 	if cfg.APIToken != "" {
 		clientOpts = append(clientOpts, deploymentrecord.WithAPIToken(cfg.APIToken))
 	}
-	apiClient := deploymentrecord.NewClient(
+	apiClient, err := deploymentrecord.NewClient(
 		cfg.BaseURL,
 		cfg.Organization,
 		clientOpts...,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create API client: %w", err)
+	}
 
 	cntrl := &Controller{
 		clientset:   clientset,
@@ -78,7 +82,7 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 	}
 
 	// Add event handlers to the informer
-	_, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
 			pod, ok := obj.(*corev1.Pod)
 			if !ok {
@@ -172,11 +176,10 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) *Control
 	})
 
 	if err != nil {
-		slog.Error("Failed to add event handlers",
-			"error", err)
+		return nil, fmt.Errorf("failed to add event handlers: %w", err)
 	}
 
-	return cntrl
+	return cntrl, nil
 }
 
 // Run starts the controller.
@@ -304,6 +307,13 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	digest := getContainerDigest(pod, container.Name)
 
 	if dn == "" || digest == "" {
+		slog.Debug("Skipping container: missing deployment name or digest",
+			"namespace", pod.Namespace,
+			"pod", pod.Name,
+			"container", container.Name,
+			"deployment_name", dn,
+			"has_digest", digest != "",
+		)
 		return nil
 	}
 
