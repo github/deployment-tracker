@@ -34,6 +34,19 @@ deployment records to GitHub's artifact metadata API.
    API
 5. Failed requests are automatically retried with exponential backoff
 
+## Authentication
+
+Two modes of authentication are supported:
+
+1. Using PAT
+1. Using a [GtHub
+   App](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps#building-a-github-app).
+
+> [!NOTE] The provisioned API token or GitHub App must have
+> `artifact-metadata: write` with access to all relevant GitHub
+> repositories (i.e all GitHub repositories that produces container
+> images that are loaded into the cluster.
+
 ## Command Line Options
 
 | Flag            | Description                          | Default                                    |
@@ -45,21 +58,18 @@ deployment records to GitHub's artifact metadata API.
 
 ## Environment Variables
 
-| Variable               | Description               | Default                                              |
-|------------------------|---------------------------|------------------------------------------------------|
-| `ORG`                  | GitHub organization name  | (required)                                           |
-| `BASE_URL`             | API base URL              | `api.github.com`                                     |
-| `DN_TEMPLATE`          | Deployment name template  | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
-| `LOGICAL_ENVIRONMENT`  | Logical environment name  | (required)                                           |
-| `PHYSICAL_ENVIRONMENT` | Physical environment name | `""`                                                 |
-| `CLUSTER`              | Cluster name              | (required)                                           |
-| `API_TOKEN`            | API authentication token  | `""`                                                 |
-
-> [!NOTE]
-> The provisioned API token must have `artifact-metadata: write` with
-> access to all relevant GitHub repositories (i.e all GitHub
-> repositories that produces container images that are loaded into the
-> cluster.
+| Variable               | Description                                | Default                                              |
+|------------------------|--------------------------------------------|------------------------------------------------------|
+| `ORG`                  | GitHub organization name                   | (required)                                           |
+| `BASE_URL`             | API base URL                               | `api.github.com`                                     |
+| `DN_TEMPLATE`          | Deployment name template                   | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
+| `LOGICAL_ENVIRONMENT`  | Logical environment name                   | (required)                                           |
+| `PHYSICAL_ENVIRONMENT` | Physical environment name                  | `""`                                                 |
+| `CLUSTER`              | Cluster name                               | (required)                                           |
+| `API_TOKEN`            | API authentication token                   | `""`                                                 |
+| `GH_APP_ID`            | GitHub App ID                              | `""`                                                 |
+| `GH_INSTALL_ID`        | GitHub App installation ID                 | `""`                                                 |
+| `GH_APP_PRIV_KEY`      | Path to the private key for the GitHub app | `""`                                                 |
 
 ### Template Variables
 
