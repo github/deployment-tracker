@@ -64,6 +64,12 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 	if cfg.APIToken != "" {
 		clientOpts = append(clientOpts, deploymentrecord.WithAPIToken(cfg.APIToken))
 	}
+	if cfg.GHAppID != "" &&
+		cfg.GHInstallID != "" &&
+		cfg.GHAppPrivateKey != "" {
+		clientOpts = append(clientOpts, deploymentrecord.WithGHApp(cfg.GHAppID, cfg.GHInstallID, cfg.GHAppPrivateKey))
+	}
+
 	apiClient, err := deploymentrecord.NewClient(
 		cfg.BaseURL,
 		cfg.Organization,
