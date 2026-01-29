@@ -465,7 +465,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 }
 
 func getCacheKey(dn, digest string) string {
-	return dn + "_" + digest
+	return dn + "||" + digest
 }
 
 // getARDeploymentName converts the pod's metadata into the correct format
