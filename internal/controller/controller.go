@@ -23,8 +23,9 @@ import (
 
 // PodEvent represents a pod event to be processed.
 type PodEvent struct {
-	Key       string
-	EventType string
+	Key        string
+	EventType  string
+	DeletedPod *corev1.Pod // Only populated for delete events
 }
 
 // Controller is the Kubernetes controller for tracking deployments.
@@ -149,14 +150,14 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 			}
 		},
 		DeleteFunc: func(obj any) {
-			_, ok := obj.(*corev1.Pod)
+			pod, ok := obj.(*corev1.Pod)
 			if !ok {
 				// Handle deleted final state unknown
 				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
 					return
 				}
-				_, ok = tombstone.Obj.(*corev1.Pod)
+				pod, ok = tombstone.Obj.(*corev1.Pod)
 				if !ok {
 					return
 				}
@@ -168,8 +169,9 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 			// bother with handling it.
 			if err == nil {
 				queue.Add(PodEvent{
-					Key:       key,
-					EventType: "DELETED",
+					Key:        key,
+					EventType:  "DELETED",
+					DeletedPod: pod,
 				})
 			}
 		},
@@ -255,26 +257,41 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 
 // processEvent processes a single pod event.
 func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
-	// Get the pod from the informer's cache
-	obj, exists, err := c.podInformer.GetIndexer().GetByKey(event.Key)
-	if err != nil {
-		slog.Error("Failed to get pod from cache",
-			"key", event.Key,
-			"error", err,
-		)
-		return nil
-	}
-	if !exists {
-		// Pod no longer exists in cache, skip processing
-		return nil
-	}
+	var pod *corev1.Pod
 
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		slog.Error("Invalid object type in cache",
-			"key", event.Key,
-		)
-		return nil
+	if event.EventType == "DELETED" {
+		// For delete events, use the pod captured at deletion time
+		// since it's already been removed from the cache
+		pod = event.DeletedPod
+		if pod == nil {
+			slog.Error("Delete event missing pod data",
+				"key", event.Key,
+			)
+			return nil
+		}
+	} else {
+		// For other events, get the pod from the informer's cache
+		obj, exists, err := c.podInformer.GetIndexer().GetByKey(event.Key)
+		if err != nil {
+			slog.Error("Failed to get pod from cache",
+				"key", event.Key,
+				"error", err,
+			)
+			return nil
+		}
+		if !exists {
+			// Pod no longer exists in cache, skip processing
+			return nil
+		}
+
+		var ok bool
+		pod, ok = obj.(*corev1.Pod)
+		if !ok {
+			slog.Error("Invalid object type in cache",
+				"key", event.Key,
+			)
+			return nil
+		}
 	}
 
 	status := deploymentrecord.StatusDeployed
