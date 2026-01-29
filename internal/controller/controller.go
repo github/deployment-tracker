@@ -13,6 +13,8 @@ import (
 	"github.com/github/deployment-tracker/pkg/metrics"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -93,8 +95,9 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 				return
 			}
 
-			// Only process pods that are running
-			if pod.Status.Phase == corev1.PodRunning {
+			// Only process pods that are running and belong
+			// to a deployment
+			if pod.Status.Phase == corev1.PodRunning && getDeploymentName(pod) != "" {
 				key, err := cache.MetaNamespaceKeyFunc(obj)
 
 				// For our purposes, there are in practice
@@ -124,8 +127,9 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 				return
 			}
 
-			// Skip if pod is being deleted
-			if newPod.DeletionTimestamp != nil {
+			// Skip if pod is being deleted or doesn't belong
+			// to a deployment
+			if newPod.DeletionTimestamp != nil || getDeploymentName(newPod) == "" {
 				return
 			}
 
@@ -162,8 +166,13 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 					return
 				}
 			}
-			key, err := cache.MetaNamespaceKeyFunc(obj)
 
+			// Only process pods that belong to a deployment
+			if getDeploymentName(pod) == "" {
+				return
+			}
+
+			key, err := cache.MetaNamespaceKeyFunc(obj)
 			// For our purposes, there are in practice
 			// no error event we care about, so don't
 			// bother with handling it.
@@ -176,7 +185,6 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 			}
 		},
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to add event handlers: %w", err)
 	}
@@ -261,7 +269,6 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 
 	if event.EventType == "DELETED" {
 		// For delete events, use the pod captured at deletion time
-		// since it's already been removed from the cache
 		pod = event.DeletedPod
 		if pod == nil {
 			slog.Error("Delete event missing pod data",
@@ -269,8 +276,20 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 			)
 			return nil
 		}
+
+		// Check if the parent deployment still exists
+		// If it does, this is just a scale-down event, skip it
+		deploymentName := getDeploymentName(pod)
+		if deploymentName != "" && c.deploymentExists(ctx, pod.Namespace, deploymentName) {
+			slog.Debug("Deployment still exists, skipping pod delete (scale down)",
+				"namespace", pod.Namespace,
+				"deployment", deploymentName,
+				"pod", pod.Name,
+			)
+			return nil
+		}
 	} else {
-		// For other events, get the pod from the informer's cache
+		// For create events, get the pod from the informer's cache
 		obj, exists, err := c.podInformer.GetIndexer().GetByKey(event.Key)
 		if err != nil {
 			slog.Error("Failed to get pod from cache",
@@ -316,6 +335,25 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	}
 
 	return lastErr
+}
+
+// deploymentExists checks if a deployment exists in the cluster.
+func (c *Controller) deploymentExists(ctx context.Context, namespace, name string) bool {
+	_, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false
+		}
+		// On error, assume it exists to be safe
+		// (avoid false decommissions)
+		slog.Warn("Failed to check if deployment exists, assuming it does",
+			"namespace", namespace,
+			"deployment", name,
+			"error", err,
+		)
+		return true
+	}
+	return true
 }
 
 // recordContainer records a single container's deployment info.
