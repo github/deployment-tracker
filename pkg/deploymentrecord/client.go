@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/github/deployment-tracker/pkg/metrics"
 	"github.com/bradleyfalzon/ghinstallation/v2"
+	"github.com/github/deployment-tracker/pkg/metrics"
 	"golang.org/x/time/rate"
 )
 
@@ -102,16 +102,16 @@ func WithAPIToken(token string) ClientOption {
 	}
 }
 
-// WithGHApp configres an GitHub app to use for authentication.
+// WithGHApp configures a GitHub app to use for authentication.
 // If provided values are invalid, this will panic.
 // If an API token is also set, the GitHub App will take precedence.
-func WithGHApp(id, installId, pk string) ClientOption {
+func WithGHApp(id, installID, pk string) ClientOption {
 	return func(c *Client) {
 		pid, err := strconv.Atoi(id)
 		if err != nil {
 			panic(err)
 		}
-		piid, err := strconv.Atoi(installId)
+		piid, err := strconv.Atoi(installID)
 		if err != nil {
 			panic(err)
 		}

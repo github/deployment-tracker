@@ -39,7 +39,7 @@ deployment records to GitHub's artifact metadata API.
 Two modes of authentication are supported:
 
 1. Using PAT
-1. Using a [GtHub
+1. Using a [GitHub
    App](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps#building-a-github-app).
 
 > [!NOTE] The provisioned API token or GitHub App must have
