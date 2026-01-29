@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
@@ -37,6 +38,10 @@ type Controller struct {
 	workqueue   workqueue.TypedRateLimitingInterface[PodEvent]
 	apiClient   *deploymentrecord.Client
 	cfg         *Config
+	// best effort cache to avoid redundant posts
+	// post requests are idempotent, so if this cache fails due to
+	// restarts or other events, nothing will break.
+	observedDeployments sync.Map
 }
 
 // New creates a new deployment tracker controller.
@@ -372,6 +377,31 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		return nil
 	}
 
+	cacheKey := getCacheKey(dn, digest)
+
+	// Check if we've already recorded this deployment
+	switch status {
+	case deploymentrecord.StatusDeployed:
+		if _, exists := c.observedDeployments.Load(cacheKey); exists {
+			slog.Debug("Deployment already observed, skipping post",
+				"deployment_name", dn,
+				"digest", digest,
+			)
+			return nil
+		}
+	case deploymentrecord.StatusDecommissioned:
+		// For delete, check if we've seen it - if not, no need to decommission
+		if _, exists := c.observedDeployments.Load(cacheKey); !exists {
+			slog.Debug("Deployment not in cache, skipping decommission",
+				"deployment_name", dn,
+				"digest", digest,
+			)
+			return nil
+		}
+	default:
+		return fmt.Errorf("invalid status: %s", status)
+	}
+
 	// Extract image name and tag
 	imageName, version := image.ExtractName(container.Image)
 
@@ -421,7 +451,21 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		"digest", record.Digest,
 	)
 
+	// Update cache after successful post
+	switch status {
+	case deploymentrecord.StatusDeployed:
+		c.observedDeployments.Store(cacheKey, true)
+	case deploymentrecord.StatusDecommissioned:
+		c.observedDeployments.Delete(cacheKey)
+	default:
+		return fmt.Errorf("invalid status: %s", status)
+	}
+
 	return nil
+}
+
+func getCacheKey(dn, digest string) string {
+	return dn + "_" + digest
 }
 
 // getARDeploymentName converts the pod's metadata into the correct format
