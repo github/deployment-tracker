@@ -24,6 +24,11 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+const (
+	EventCreated = "CREATED"
+	EventDeleted = "DELETED"
+)
+
 // PodEvent represents a pod event to be processed.
 type PodEvent struct {
 	Key        string
@@ -111,7 +116,7 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 				if err == nil {
 					queue.Add(PodEvent{
 						Key:       key,
-						EventType: "CREATED",
+						EventType: EventCreated,
 					})
 				}
 			}
@@ -153,7 +158,7 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 				if err == nil {
 					queue.Add(PodEvent{
 						Key:       key,
-						EventType: "CREATED",
+						EventType: EventCreated,
 					})
 				}
 			}
@@ -184,7 +189,7 @@ func New(clientset kubernetes.Interface, namespace string, cfg *Config) (*Contro
 			if err == nil {
 				queue.Add(PodEvent{
 					Key:        key,
-					EventType:  "DELETED",
+					EventType:  EventDeleted,
 					DeletedPod: pod,
 				})
 			}
@@ -272,7 +277,7 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	var pod *corev1.Pod
 
-	if event.EventType == "DELETED" {
+	if event.EventType == EventDeleted {
 		// For delete events, use the pod captured at deletion time
 		pod = event.DeletedPod
 		if pod == nil {
@@ -283,7 +288,14 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		}
 
 		// Check if the parent deployment still exists
-		// If it does, this is just a scale-down event, skip it
+		// If it does, this is just a scale-down event, skip it.
+		//
+		// If a deployment changes image versions, this will not
+		// fire delete/decommissioned events to the remote API.
+		// This is as intended, as the server will keep track of
+		// the (cluster unique) deployment name, and just update
+		// the referenced image digest to the newly observed (via
+		// the create event).
 		deploymentName := getDeploymentName(pod)
 		if deploymentName != "" && c.deploymentExists(ctx, pod.Namespace, deploymentName) {
 			slog.Debug("Deployment still exists, skipping pod delete (scale down)",
@@ -319,7 +331,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	}
 
 	status := deploymentrecord.StatusDeployed
-	if event.EventType == "DELETED" {
+	if event.EventType == EventDeleted {
 		status = deploymentrecord.StatusDecommissioned
 	}
 
