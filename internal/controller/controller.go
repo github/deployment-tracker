@@ -25,7 +25,9 @@ import (
 )
 
 const (
+	// EventCreated indicates that a pod has been created.
 	EventCreated = "CREATED"
+	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
 )
 
