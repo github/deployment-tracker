@@ -64,6 +64,9 @@ func main() {
 		Cluster:             os.Getenv("CLUSTER"),
 		APIToken:            getEnvOrDefault("API_TOKEN", ""),
 		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
+		GHAppID:             getEnvOrDefault("GH_APP_ID", ""),
+		GHInstallID:         getEnvOrDefault("GH_INSTALL_ID", ""),
+		GHAppPrivateKey:     getEnvOrDefault("GH_APP_PRIV_KEY", ""),
 		Organization:        os.Getenv("GITHUB_ORG"),
 	}
 

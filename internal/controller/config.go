@@ -21,6 +21,9 @@ type Config struct {
 	Cluster             string
 	APIToken            string
 	BaseURL             string
+	GHAppID             string
+	GHInstallID         string
+	GHAppPrivateKey     string
 	Organization        string
 }
 

@@ -12,9 +12,11 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/github/deployment-tracker/pkg/metrics"
 	"golang.org/x/time/rate"
 )
@@ -33,6 +35,7 @@ type Client struct {
 	httpClient  *http.Client
 	retries     int
 	apiToken    string
+	transport   *ghinstallation.Transport
 	rateLimiter *rate.Limiter
 }
 
@@ -96,6 +99,30 @@ func WithRetries(retries int) ClientOption {
 func WithAPIToken(token string) ClientOption {
 	return func(c *Client) {
 		c.apiToken = token
+	}
+}
+
+// WithGHApp configures a GitHub app to use for authentication.
+// If provided values are invalid, this will panic.
+// If an API token is also set, the GitHub App will take precedence.
+func WithGHApp(id, installID, pk string) ClientOption {
+	return func(c *Client) {
+		pid, err := strconv.Atoi(id)
+		if err != nil {
+			panic(err)
+		}
+		piid, err := strconv.Atoi(installID)
+		if err != nil {
+			panic(err)
+		}
+		c.transport, err = ghinstallation.NewKeyFromFile(
+			http.DefaultTransport,
+			int64(pid),
+			int64(piid),
+			pk)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -171,7 +198,15 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		if c.apiToken != "" {
+		if c.transport != nil {
+			// Token is thread safe, so no need for external
+			// locking
+			tok, err := c.transport.Token(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get access token: %w", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+tok)
+		} else if c.apiToken != "" {
 			req.Header.Set("Authorization", "Bearer "+c.apiToken)
 		}
 
