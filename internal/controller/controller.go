@@ -482,13 +482,14 @@ func getCacheKey(dn, digest string) string {
 // If namespace is non-empty, it will only watch that namespace.
 func createInformerFactory(clientset kubernetes.Interface, namespace string, excludeNamespaces string) informers.SharedInformerFactory {
 	var factory informers.SharedInformerFactory
-	if namespace != "" {
+	switch {
+	case namespace != "":
 		factory = informers.NewSharedInformerFactoryWithOptions(
 			clientset,
 			30*time.Second,
 			informers.WithNamespace(namespace),
 		)
-	} else if excludeNamespaces != "" {
+	case excludeNamespaces != "":
 		excludedNamespacesList := strings.Split(excludeNamespaces, ",")
 		for i := 0; i < len(excludedNamespacesList); i++ {
 			excludedNamespacesList[i] = fmt.Sprintf("metadata.namespace!=%s", strings.TrimSpace(excludedNamespacesList[i]))
@@ -502,7 +503,7 @@ func createInformerFactory(clientset kubernetes.Interface, namespace string, exc
 			30*time.Second,
 			informers.WithTweakListOptions(tweakListOptions),
 		)
-	} else {
+	default:
 		factory = informers.NewSharedInformerFactory(clientset,
 			30*time.Second,
 		)
