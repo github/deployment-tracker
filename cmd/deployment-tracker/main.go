@@ -49,7 +49,7 @@ func main() {
 
 	// Cannot use both
 	if namespace != "" && excludeNamespaces != "" {
-		slog.Error("Cannot set both --namespace and --exclude-namespace")
+		slog.Error("Cannot set both -namespace and -exclude-namespaces")
 		os.Exit(1)
 	}
 

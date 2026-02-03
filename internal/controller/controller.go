@@ -484,18 +484,33 @@ func createInformerFactory(clientset kubernetes.Interface, namespace string, exc
 	var factory informers.SharedInformerFactory
 	switch {
 	case namespace != "":
+		slog.Info("Namespace to watch",
+			"namespace",
+			namespace,
+		)
 		factory = informers.NewSharedInformerFactoryWithOptions(
 			clientset,
 			30*time.Second,
 			informers.WithNamespace(namespace),
 		)
 	case excludeNamespaces != "":
-		excludedNamespacesList := strings.Split(excludeNamespaces, ",")
-		for i := 0; i < len(excludedNamespacesList); i++ {
-			excludedNamespacesList[i] = fmt.Sprintf("metadata.namespace!=%s", strings.TrimSpace(excludedNamespacesList[i]))
+		seenNamespaces := make(map[string]bool)
+		fieldSelectorParts := make([]string, 0)
+
+		for _, ns := range strings.Split(excludeNamespaces, ",") {
+			ns = strings.TrimSpace(ns)
+			if ns != "" && !seenNamespaces[ns] {
+				seenNamespaces[ns] = true
+				fieldSelectorParts = append(fieldSelectorParts, fmt.Sprintf("metadata.namespace!=%s", ns))
+			}
 		}
+
+		slog.Info("Excluding namespaces from watch",
+			"field_selector",
+			strings.Join(fieldSelectorParts, ","),
+		)
 		tweakListOptions := func(options *metav1.ListOptions) {
-			options.FieldSelector = strings.Join(excludedNamespacesList, ",")
+			options.FieldSelector = strings.Join(fieldSelectorParts, ",")
 		}
 
 		factory = informers.NewSharedInformerFactoryWithOptions(
