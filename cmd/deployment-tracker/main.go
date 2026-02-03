@@ -33,17 +33,25 @@ func getEnvOrDefault(key, defaultValue string) string {
 
 func main() {
 	var (
-		kubeconfig  string
-		namespace   string
-		workers     int
-		metricsPort string
+		kubeconfig        string
+		namespace         string
+		excludeNamespaces string
+		workers           int
+		metricsPort       string
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig file (uses in-cluster config if not set)")
 	flag.StringVar(&namespace, "namespace", "", "namespace to monitor (empty for all namespaces)")
+	flag.StringVar(&excludeNamespaces, "exclude-namespace", "", "namespace to exclude from monitoring (empty to include all namespaces)")
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
 	flag.StringVar(&metricsPort, "metrics-port", "9090", "port to listen to for metrics")
 	flag.Parse()
+
+	// Cannot use both
+	if namespace != "" && excludeNamespaces != "" {
+		slog.Error("Cannot set both --namespace and --exclude-namespace")
+		os.Exit(1)
+	}
 
 	// Validate worker count
 	if workers < 1 || workers > 100 {
@@ -143,7 +151,7 @@ func main() {
 		cancel()
 	}()
 
-	cntrl, err := controller.New(clientset, namespace, &cntrlCfg)
+	cntrl, err := controller.New(clientset, namespace, excludeNamespaces, &cntrlCfg)
 	if err != nil {
 		slog.Error("Failed to create controller",
 			"error", err)
