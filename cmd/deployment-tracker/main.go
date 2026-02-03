@@ -42,7 +42,7 @@ func main() {
 
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig file (uses in-cluster config if not set)")
 	flag.StringVar(&namespace, "namespace", "", "namespace to monitor (empty for all namespaces)")
-	flag.StringVar(&excludeNamespaces, "exclude-namespace", "", "comma separated list of namespaces to exclude from monitoring (empty to include all namespaces)")
+	flag.StringVar(&excludeNamespaces, "exclude-namespaces", "", "comma separated list of namespaces to exclude from monitoring (empty to include all namespaces)")
 	flag.IntVar(&workers, "workers", 2, "number of worker goroutines")
 	flag.StringVar(&metricsPort, "metrics-port", "9090", "port to listen to for metrics")
 	flag.Parse()
