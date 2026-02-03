@@ -49,12 +49,16 @@ Two modes of authentication are supported:
 
 ## Command Line Options
 
-| Flag            | Description                          | Default                                    |
-|-----------------|--------------------------------------|--------------------------------------------|
-| `-kubeconfig`   | Path to kubeconfig file              | Uses in-cluster config or `~/.kube/config` |
-| `-namespace`    | Namespace to monitor (empty for all) | `""` (all namespaces)                      |
-| `-workers`      | Number of worker goroutines          | `2`                                        |
-| `-metrics-port` | Port number for Prometheus metrics   | 9090                                       |
+| Flag                  | Description                                                   | Default                                    |
+|-----------------------|---------------------------------------------------------------|--------------------------------------------|
+| `-kubeconfig`         | Path to kubeconfig file                                       | Uses in-cluster config or `~/.kube/config` |
+| `-namespace`          | Namespace to monitor (empty for all)                          | `""` (all namespaces)                      |
+| `-exclude-namespaces` | Comma-separated list of namespaces to exclude (empty for all) | `""` (all namespaces)                      |
+| `-workers`            | Number of worker goroutines                                   | `2`                                        |
+| `-metrics-port`       | Port number for Prometheus metrics                            | 9090                                       |
+
+> [!NOTE]
+> The `-namespace` and `-exclude-namespaces` flags cannot be used together.
 
 ## Environment Variables
 
