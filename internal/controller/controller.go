@@ -29,6 +29,8 @@ const (
 	EventCreated = "CREATED"
 	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
+	// RuntimeRiskAnnotationKey represents the annotation key for runtime risks.
+	RuntimeRiskAnnotationKey = "github.com/runtime-risks"
 )
 
 // PodEvent represents a pod event to be processed.
@@ -36,6 +38,11 @@ type PodEvent struct {
 	Key        string
 	EventType  string
 	DeletedPod *corev1.Pod // Only populated for delete events
+}
+
+// AggregatePodMetadata represents combined metadata for a pod and its ownership hierarchy.
+type AggregatePodMetadata struct {
+	RuntimeRisks map[deploymentrecord.RuntimeRisk]bool
 }
 
 // Controller is the Kubernetes controller for tracking deployments.
@@ -414,6 +421,15 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	// Extract image name and tag
 	imageName, version := image.ExtractName(container.Image)
 
+	// Gather aggregate metadata
+	metadata := c.aggregateMetadata(ctx, pod)
+	var runtimeRisks []deploymentrecord.RuntimeRisk
+	if status != deploymentrecord.StatusDecommissioned {
+		for risk := range metadata.RuntimeRisks {
+			runtimeRisks = append(runtimeRisks, risk)
+		}
+	}
+
 	// Create deployment record
 	record := deploymentrecord.NewDeploymentRecord(
 		imageName,
@@ -424,6 +440,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		c.cfg.Cluster,
 		status,
 		dn,
+		runtimeRisks,
 	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
@@ -457,6 +474,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		"name", record.Name,
 		"deployment_name", record.DeploymentName,
 		"status", record.Status,
+		"runtime_risks", record.RuntimeRisks,
 		"digest", record.Digest,
 	)
 
@@ -471,6 +489,82 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	}
 
 	return nil
+}
+
+// aggregateRuntimeRisks aggregates metadata for a pod and its owners.
+func (c *Controller) aggregateMetadata(ctx context.Context, obj metav1.Object) AggregatePodMetadata {
+	metadata := AggregatePodMetadata{
+		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
+	}
+	visited := make(map[string]bool)
+
+	getMetadataFromObject(obj, metadata)
+	c.getMetadataFromOwners(ctx, obj, metadata, visited)
+
+	return metadata
+}
+
+// collectRuntimeRisksFromOwners recursively collects metadata from owner references
+// in the ownership chain
+// Visited map prevents infinite recursion on circular ownership references.
+func (c *Controller) getMetadataFromOwners(ctx context.Context, obj metav1.Object, metadata AggregatePodMetadata, visited map[string]bool) {
+	ownerRefs := obj.GetOwnerReferences()
+
+	for _, owner := range ownerRefs {
+		ownerKey := fmt.Sprintf("%s/%s/%s", obj.GetNamespace(), owner.Kind, owner.Name)
+		if visited[ownerKey] {
+			slog.Debug("Cycle detected in ownership chain, skipping",
+				"namespace", obj.GetNamespace(),
+				"owner_kind", owner.Kind,
+				"owner_name", owner.Name,
+			)
+			continue
+		}
+		visited[ownerKey] = true
+
+		ownerObj, err := c.getOwnerObject(ctx, obj.GetNamespace(), owner)
+		if err != nil {
+			slog.Warn("Failed to get owner object for metadata collection",
+				"namespace", obj.GetNamespace(),
+				"owner_kind", owner.Kind,
+				"owner_name", owner.Name,
+				"error", err,
+			)
+			continue
+		}
+
+		if ownerObj == nil {
+			continue
+		}
+
+		getMetadataFromObject(ownerObj, metadata)
+		c.getMetadataFromOwners(ctx, ownerObj, metadata, visited)
+	}
+}
+
+// getOwnerObject retrieves the owner object based on its kind, namespace, and name.
+func (c *Controller) getOwnerObject(ctx context.Context, namespace string, owner metav1.OwnerReference) (metav1.Object, error) {
+	switch owner.Kind {
+	case "ReplicaSet":
+		rs, err := c.clientset.AppsV1().ReplicaSets(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return rs, nil
+	case "Deployment":
+		deployment, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return deployment, nil
+	default:
+		// Unsupported kinds
+		slog.Debug("Unsupported owner kind for runtime risk collection",
+			"kind", owner.Kind,
+			"name", owner.Name,
+		)
+		return nil, nil
+	}
 }
 
 func getCacheKey(dn, digest string) string {
@@ -579,4 +673,17 @@ func getDeploymentName(pod *corev1.Pod) string {
 		}
 	}
 	return ""
+}
+
+// getMetadataFromObject extracts metadata from an object.
+func getMetadataFromObject(obj metav1.Object, metadata AggregatePodMetadata) {
+	annotations := obj.GetAnnotations()
+	if risks, exists := annotations[RuntimeRiskAnnotationKey]; exists {
+		for _, risk := range strings.Split(risks, ",") {
+			r := deploymentrecord.ValidateRuntimeRisk(strings.TrimSpace(risk))
+			if r != "" {
+				metadata.RuntimeRisks[r] = true
+			}
+		}
+	}
 }
