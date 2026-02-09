@@ -12,7 +12,9 @@ import (
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/github/deployment-tracker/pkg/image"
 	"github.com/github/deployment-tracker/pkg/metrics"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/metadata"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,11 +50,12 @@ type AggregatePodMetadata struct {
 
 // Controller is the Kubernetes controller for tracking deployments.
 type Controller struct {
-	clientset   kubernetes.Interface
-	podInformer cache.SharedIndexInformer
-	workqueue   workqueue.TypedRateLimitingInterface[PodEvent]
-	apiClient   *deploymentrecord.Client
-	cfg         *Config
+	clientset      kubernetes.Interface
+	metadataClient metadata.Interface
+	podInformer    cache.SharedIndexInformer
+	workqueue      workqueue.TypedRateLimitingInterface[PodEvent]
+	apiClient      *deploymentrecord.Client
+	cfg            *Config
 	// best effort cache to avoid redundant posts
 	// post requests are idempotent, so if this cache fails due to
 	// restarts or other events, nothing will break.
@@ -60,7 +63,7 @@ type Controller struct {
 }
 
 // New creates a new deployment tracker controller.
-func New(clientset kubernetes.Interface, namespace string, excludeNamespaces string, cfg *Config) (*Controller, error) {
+func New(clientset kubernetes.Interface, metadataClient metadata.Interface, namespace string, excludeNamespaces string, cfg *Config) (*Controller, error) {
 	// Create informer factory
 	factory := createInformerFactory(clientset, namespace, excludeNamespaces)
 
@@ -92,11 +95,12 @@ func New(clientset kubernetes.Interface, namespace string, excludeNamespaces str
 	}
 
 	cntrl := &Controller{
-		clientset:   clientset,
-		podInformer: podInformer,
-		workqueue:   queue,
-		apiClient:   apiClient,
-		cfg:         cfg,
+		clientset:      clientset,
+		metadataClient: metadataClient,
+		podInformer:    podInformer,
+		workqueue:      queue,
+		apiClient:      apiClient,
+		cfg:            cfg,
 	}
 
 	// Add event handlers to the informer
@@ -342,16 +346,25 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 
 	var lastErr error
 
+	// Gather aggregate metadata for adds/updates
+	var runtimeRisks []deploymentrecord.RuntimeRisk
+	if status != deploymentrecord.StatusDecommissioned {
+		aggMetadata := c.aggregateMetadata(ctx, podToPartialMetadata(pod))
+		for risk := range aggMetadata.RuntimeRisks {
+			runtimeRisks = append(runtimeRisks, risk)
+		}
+	}
+
 	// Record info for each container in the pod
 	for _, container := range pod.Spec.Containers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType); err != nil {
+		if err := c.recordContainer(ctx, pod, container, status, event.EventType, runtimeRisks); err != nil {
 			lastErr = err
 		}
 	}
 
 	// Also record init containers
 	for _, container := range pod.Spec.InitContainers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType); err != nil {
+		if err := c.recordContainer(ctx, pod, container, status, event.EventType, runtimeRisks); err != nil {
 			lastErr = err
 		}
 	}
@@ -379,7 +392,7 @@ func (c *Controller) deploymentExists(ctx context.Context, namespace, name strin
 }
 
 // recordContainer records a single container's deployment info.
-func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string) error {
+func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, runtimeRisks []deploymentrecord.RuntimeRisk) error {
 	dn := getARDeploymentName(pod, container, c.cfg.Template)
 	digest := getContainerDigest(pod, container.Name)
 
@@ -421,15 +434,6 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 
 	// Extract image name and tag
 	imageName, version := image.ExtractName(container.Image)
-
-	// Gather aggregate metadata for adds/updates
-	var runtimeRisks []deploymentrecord.RuntimeRisk
-	if status != deploymentrecord.StatusDecommissioned {
-		metadata := c.aggregateMetadata(ctx, pod)
-		for risk := range metadata.RuntimeRisks {
-			runtimeRisks = append(runtimeRisks, risk)
-		}
-	}
 
 	// Create deployment record
 	record := deploymentrecord.NewDeploymentRecord(
@@ -492,12 +496,12 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	return nil
 }
 
-// aggregateRuntimeRisks aggregates metadata for a pod and its owners.
-func (c *Controller) aggregateMetadata(ctx context.Context, obj metav1.Object) AggregatePodMetadata {
-	metadata := AggregatePodMetadata{
+// aggregateMetadata returns aggregated metadata for a pod and its owners.
+func (c *Controller) aggregateMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) AggregatePodMetadata {
+	aggMetadata := AggregatePodMetadata{
 		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
 	}
-	queue := []metav1.Object{obj}
+	queue := []*metav1.PartialObjectMetadata{obj}
 	visited := make(map[types.UID]bool)
 
 	for len(queue) > 0 {
@@ -513,20 +517,20 @@ func (c *Controller) aggregateMetadata(ctx context.Context, obj metav1.Object) A
 		}
 		visited[current.GetUID()] = true
 
-		getMetadataFromObject(current, metadata)
+		extractMetadataFromObject(current, &aggMetadata)
 		c.addOwnersToQueue(ctx, current, &queue)
 	}
 
-	return metadata
+	return aggMetadata
 }
 
-// collectRuntimeRisksFromOwners takes a current object and looks up its owners, adding them to the queue for processing
+// addOwnersToQueue takes a current object and looks up its owners, adding them to the queue for processing
 // to collect their metadata.
-func (c *Controller) addOwnersToQueue(ctx context.Context, current metav1.Object, queue *[]metav1.Object) {
+func (c *Controller) addOwnersToQueue(ctx context.Context, current *metav1.PartialObjectMetadata, queue *[]*metav1.PartialObjectMetadata) {
 	ownerRefs := current.GetOwnerReferences()
 
 	for _, owner := range ownerRefs {
-		ownerObj, err := c.getOwnerObject(ctx, current.GetNamespace(), owner)
+		ownerObj, err := c.getOwnerMetadata(ctx, current.GetNamespace(), owner)
 		if err != nil {
 			slog.Warn("Failed to get owner object for metadata collection",
 				"namespace", current.GetNamespace(),
@@ -545,29 +549,39 @@ func (c *Controller) addOwnersToQueue(ctx context.Context, current metav1.Object
 	}
 }
 
-// getOwnerObject retrieves the owner object based on its kind, namespace, and name.
-func (c *Controller) getOwnerObject(ctx context.Context, namespace string, owner metav1.OwnerReference) (metav1.Object, error) {
+// getOwnerMetadata retrieves partial object metadata for an owner ref.
+func (c *Controller) getOwnerMetadata(ctx context.Context, namespace string, owner metav1.OwnerReference) (*metav1.PartialObjectMetadata, error) {
+	gvr := schema.GroupVersionResource{
+		Group:   "apps",
+		Version: "v1",
+	}
+
 	switch owner.Kind {
 	case "ReplicaSet":
-		rs, err := c.clientset.AppsV1().ReplicaSets(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, err
-		}
-		return rs, nil
+		gvr.Resource = "replicasets"
 	case "Deployment":
-		deployment, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, err
-		}
-		return deployment, nil
+		gvr.Resource = "deployments"
 	default:
-		// Unsupported kinds
 		slog.Debug("Unsupported owner kind for runtime risk collection",
 			"kind", owner.Kind,
 			"name", owner.Name,
 		)
 		return nil, nil
 	}
+
+	obj, err := c.metadataClient.Resource(gvr).Namespace(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			slog.Debug("Owner object not found for metadata collection",
+				"namespace", namespace,
+				"owner_kind", owner.Kind,
+				"owner_name", owner.Name,
+			)
+			return nil, nil
+		}
+		return nil, err
+	}
+	return obj, nil
 }
 
 func getCacheKey(dn, digest string) string {
@@ -678,15 +692,25 @@ func getDeploymentName(pod *corev1.Pod) string {
 	return ""
 }
 
-// getMetadataFromObject extracts metadata from an object.
-func getMetadataFromObject(obj metav1.Object, metadata AggregatePodMetadata) {
+// extractMetadataFromObject extracts metadata from an object.
+func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggMetadata *AggregatePodMetadata) {
 	annotations := obj.GetAnnotations()
 	if risks, exists := annotations[RuntimeRiskAnnotationKey]; exists {
 		for _, risk := range strings.Split(risks, ",") {
-			r := deploymentrecord.ValidateRuntimeRisk(strings.TrimSpace(risk))
+			r := deploymentrecord.ValidateRuntimeRisk(risk)
 			if r != "" {
-				metadata.RuntimeRisks[r] = true
+				aggMetadata.RuntimeRisks[r] = true
 			}
 		}
+	}
+}
+
+func podToPartialMetadata(pod *corev1.Pod) *metav1.PartialObjectMetadata {
+	return &metav1.PartialObjectMetadata{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Pod",
+		},
+		ObjectMeta: pod.ObjectMeta,
 	}
 }

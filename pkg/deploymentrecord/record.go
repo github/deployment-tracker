@@ -1,20 +1,34 @@
 package deploymentrecord
 
+import (
+	"log/slog"
+	"strings"
+)
+
 // Status constants for deployment records.
 const (
 	StatusDeployed       = "deployed"
 	StatusDecommissioned = "decommissioned"
 )
 
-// Runtime risks for deployment records.
+// RuntimeRisk for deployment records.
 type RuntimeRisk string
 
+// Valid runtime risks.
 const (
 	CriticalResource RuntimeRisk = "critical-resource"
 	InternetExposed  RuntimeRisk = "internet-exposed"
 	LateralMovement  RuntimeRisk = "lateral-movement"
 	SensitiveData    RuntimeRisk = "sensitive-data"
 )
+
+// Map of valid runtime risks.
+var validRuntimeRisks = map[RuntimeRisk]bool{
+	CriticalResource: true,
+	InternetExposed:  true,
+	LateralMovement:  true,
+	SensitiveData:    true,
+}
 
 // DeploymentRecord represents a deployment event record.
 type DeploymentRecord struct {
@@ -53,14 +67,13 @@ func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
 	}
 }
 
-// ValidateRuntimeRisk confirms is string is a valid runtime risk,
+// ValidateRuntimeRisk confirms if string is a valid runtime risk,
 // then returns the canonical runtime risk constant if valid, empty string otherwise.
 func ValidateRuntimeRisk(risk string) RuntimeRisk {
-	r := RuntimeRisk(risk)
-	switch r {
-	case CriticalResource, InternetExposed, LateralMovement, SensitiveData:
-		return r
-	default:
+	r := RuntimeRisk(strings.ToLower(strings.TrimSpace(risk)))
+	if !validRuntimeRisks[r] {
+		slog.Debug("Invalid runtime risk", "risk", risk)
 		return ""
 	}
+	return r
 }

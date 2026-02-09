@@ -87,11 +87,7 @@ The `DN_TEMPLATE` supports the following placeholders:
 
 You can track runtime risks through annotations. Add the annotation `github.com/runtime-risks`, with a comma-separated list of supported runtime risk values. Annotations are aggregated from the pod and its owner reference objects. 
 
-Currently supported runtime risks:
-- `critical-resource`
-- `lateral-movement`
-- `internet-exposed`
-- `sensitive-data`
+Currently supported runtime risks can be found in the [Create Deployment Record API docs](https://docs.github.com/en/rest/orgs/artifact-metadata?apiVersion=2022-11-28#create-an-artifact-deployment-record). Invalid runtime risk values will be ignored.
 
 
 ## Kubernetes Deployment
@@ -101,7 +97,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods; `get` on other supported objects)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
