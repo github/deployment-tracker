@@ -12,6 +12,7 @@ import (
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/github/deployment-tracker/pkg/image"
 	"github.com/github/deployment-tracker/pkg/metrics"
+	"k8s.io/apimachinery/pkg/types"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -421,10 +422,10 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	// Extract image name and tag
 	imageName, version := image.ExtractName(container.Image)
 
-	// Gather aggregate metadata
-	metadata := c.aggregateMetadata(ctx, pod)
+	// Gather aggregate metadata for adds/updates
 	var runtimeRisks []deploymentrecord.RuntimeRisk
 	if status != deploymentrecord.StatusDecommissioned {
+		metadata := c.aggregateMetadata(ctx, pod)
 		for risk := range metadata.RuntimeRisks {
 			runtimeRisks = append(runtimeRisks, risk)
 		}
@@ -496,36 +497,39 @@ func (c *Controller) aggregateMetadata(ctx context.Context, obj metav1.Object) A
 	metadata := AggregatePodMetadata{
 		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
 	}
-	visited := make(map[string]bool)
+	queue := []metav1.Object{obj}
+	visited := make(map[types.UID]bool)
 
-	getMetadataFromObject(obj, metadata)
-	c.getMetadataFromOwners(ctx, obj, metadata, visited)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		if visited[current.GetUID()] {
+			slog.Warn("Already visited object, skipping to avoid cycles",
+				"UID", current.GetUID(),
+				"name", current.GetName(),
+			)
+			continue
+		}
+		visited[current.GetUID()] = true
+
+		getMetadataFromObject(current, metadata)
+		c.addOwnersToQueue(ctx, current, &queue)
+	}
 
 	return metadata
 }
 
-// collectRuntimeRisksFromOwners recursively collects metadata from owner references
-// in the ownership chain
-// Visited map prevents infinite recursion on circular ownership references.
-func (c *Controller) getMetadataFromOwners(ctx context.Context, obj metav1.Object, metadata AggregatePodMetadata, visited map[string]bool) {
-	ownerRefs := obj.GetOwnerReferences()
+// collectRuntimeRisksFromOwners takes a current object and looks up its owners, adding them to the queue for processing
+// to collect their metadata.
+func (c *Controller) addOwnersToQueue(ctx context.Context, current metav1.Object, queue *[]metav1.Object) {
+	ownerRefs := current.GetOwnerReferences()
 
 	for _, owner := range ownerRefs {
-		ownerKey := fmt.Sprintf("%s/%s/%s", obj.GetNamespace(), owner.Kind, owner.Name)
-		if visited[ownerKey] {
-			slog.Debug("Cycle detected in ownership chain, skipping",
-				"namespace", obj.GetNamespace(),
-				"owner_kind", owner.Kind,
-				"owner_name", owner.Name,
-			)
-			continue
-		}
-		visited[ownerKey] = true
-
-		ownerObj, err := c.getOwnerObject(ctx, obj.GetNamespace(), owner)
+		ownerObj, err := c.getOwnerObject(ctx, current.GetNamespace(), owner)
 		if err != nil {
 			slog.Warn("Failed to get owner object for metadata collection",
-				"namespace", obj.GetNamespace(),
+				"namespace", current.GetNamespace(),
 				"owner_kind", owner.Kind,
 				"owner_name", owner.Name,
 				"error", err,
@@ -537,8 +541,7 @@ func (c *Controller) getMetadataFromOwners(ctx context.Context, obj metav1.Objec
 			continue
 		}
 
-		getMetadataFromObject(ownerObj, metadata)
-		c.getMetadataFromOwners(ctx, ownerObj, metadata, visited)
+		*queue = append(*queue, ownerObj)
 	}
 }
 
