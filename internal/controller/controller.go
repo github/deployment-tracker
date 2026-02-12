@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -353,6 +354,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		for risk := range aggMetadata.RuntimeRisks {
 			runtimeRisks = append(runtimeRisks, risk)
 		}
+		slices.Sort(runtimeRisks)
 	}
 
 	// Record info for each container in the pod
