@@ -10,7 +10,7 @@ const (
 type DeploymentRecord struct {
 	Name                string `json:"name"`
 	Digest              string `json:"digest"`
-	Version             string `json:"version"`
+	Version             string `json:"version,omitempty"`
 	LogicalEnvironment  string `json:"logical_environment"`
 	PhysicalEnvironment string `json:"physical_environment"`
 	Cluster             string `json:"cluster"`
