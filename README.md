@@ -23,6 +23,7 @@ deployment records to GitHub's artifact metadata API.
 - **Real-time tracking**: Sends deployment records when pods are
   created or deleted
 - **Graceful shutdown**: Properly drains work queue before terminating
+- **Runtime risks**: Track runtime risks through annotations
 
 ## How It Works
 
@@ -82,6 +83,13 @@ The `DN_TEMPLATE` supports the following placeholders:
 - `{{deploymentName}}` - Name of the owning Deployment
 - `{{containerName}}` - Container name
 
+## Runtime Risks
+
+You can track runtime risks through annotations. Add the annotation `github.com/runtime-risks`, with a comma-separated list of supported runtime risk values. Annotations are aggregated from the pod and its owner reference objects. 
+
+Currently supported runtime risks can be found in the [Create Deployment Record API docs](https://docs.github.com/en/rest/orgs/artifact-metadata?apiVersion=2022-11-28#create-an-artifact-deployment-record). Invalid runtime risk values will be ignored.
+
+
 ## Kubernetes Deployment
 
 A complete deployment manifest is provided in `deploy/manifest.yaml`
@@ -89,7 +97,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods; `get` on other supported objects)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
