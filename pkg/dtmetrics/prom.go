@@ -1,4 +1,4 @@
-package metrics
+package dtmetrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"

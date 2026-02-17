@@ -1,4 +1,4 @@
-package image
+package ociutil
 
 // ExtractDigest extracts the digest from an ImageID.
 // ImageID format is typically: docker-pullable://image@sha256:abc123...
