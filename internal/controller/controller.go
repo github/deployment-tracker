@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
-	"github.com/github/deployment-tracker/pkg/image"
-	"github.com/github/deployment-tracker/pkg/metrics"
+	"github.com/github/deployment-tracker/pkg/dtmetrics"
+	"github.com/github/deployment-tracker/pkg/ociutil"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	amcache "k8s.io/apimachinery/pkg/util/cache"
@@ -271,14 +271,14 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 	dur := time.Since(start)
 
 	if err == nil {
-		metrics.EventsProcessedOk.WithLabelValues(event.EventType).Inc()
-		metrics.EventsProcessedTimer.WithLabelValues("ok").Observe(dur.Seconds())
+		dtmetrics.EventsProcessedOk.WithLabelValues(event.EventType).Inc()
+		dtmetrics.EventsProcessedTimer.WithLabelValues("ok").Observe(dur.Seconds())
 
 		c.workqueue.Forget(event)
 		return true
 	}
-	metrics.EventsProcessedTimer.WithLabelValues("failed").Observe(dur.Seconds())
-	metrics.EventsProcessedFailed.WithLabelValues(event.EventType).Inc()
+	dtmetrics.EventsProcessedTimer.WithLabelValues("failed").Observe(dur.Seconds())
+	dtmetrics.EventsProcessedFailed.WithLabelValues(event.EventType).Inc()
 
 	// Requeue on error with rate limiting
 	slog.Error("Failed to process event, requeuing",
@@ -443,7 +443,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	}
 
 	// Extract image name and tag
-	imageName, version := image.ExtractName(container.Image)
+	imageName, version := ociutil.ExtractName(container.Image)
 
 	// Create deployment record
 	record := deploymentrecord.NewDeploymentRecord(
@@ -676,14 +676,14 @@ func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	// Check regular container statuses
 	for _, status := range pod.Status.ContainerStatuses {
 		if status.Name == containerName {
-			return image.ExtractDigest(status.ImageID)
+			return ociutil.ExtractDigest(status.ImageID)
 		}
 	}
 
 	// Check init container statuses
 	for _, status := range pod.Status.InitContainerStatuses {
 		if status.Name == containerName {
-			return image.ExtractDigest(status.ImageID)
+			return ociutil.ExtractDigest(status.ImageID)
 		}
 	}
 

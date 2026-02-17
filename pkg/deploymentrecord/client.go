@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
-	"github.com/github/deployment-tracker/pkg/metrics"
+	"github.com/github/deployment-tracker/pkg/dtmetrics"
 	"golang.org/x/time/rate"
 )
 
@@ -211,9 +211,10 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		}
 
 		start := time.Now()
+		// nolint: gosec
 		resp, err := c.httpClient.Do(req)
 		dur := time.Since(start)
-		metrics.PostDeploymentRecordTimer.Observe(dur.Seconds())
+		dtmetrics.PostDeploymentRecordTimer.Observe(dur.Seconds())
 		if err != nil {
 			lastErr = fmt.Errorf("post request failed: %w", err)
 
@@ -221,7 +222,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 				"attempt", attempt,
 				"retries", c.retries,
 				"error", lastErr)
-			metrics.PostDeploymentRecordSoftFail.Inc()
+			dtmetrics.PostDeploymentRecordSoftFail.Inc()
 			continue
 		}
 
@@ -230,7 +231,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			metrics.PostDeploymentRecordOk.Inc()
+			dtmetrics.PostDeploymentRecordOk.Inc()
 			return nil
 		}
 
@@ -239,16 +240,16 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		// Don't retry on client errors (4xx) except for 429
 		// (rate limit)
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
-			metrics.PostDeploymentRecordClientError.Inc()
+			dtmetrics.PostDeploymentRecordClientError.Inc()
 			slog.Warn("client error, aborting",
 				"attempt", attempt,
 				"error", lastErr)
 			return &ClientError{err: lastErr}
 		}
-		metrics.PostDeploymentRecordSoftFail.Inc()
+		dtmetrics.PostDeploymentRecordSoftFail.Inc()
 	}
 
-	metrics.PostDeploymentRecordHardFail.Inc()
+	dtmetrics.PostDeploymentRecordHardFail.Inc()
 	slog.Error("all retries exhausted",
 		"count", c.retries,
 		"error", lastErr)
