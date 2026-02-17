@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
@@ -15,6 +14,7 @@ import (
 	"github.com/github/deployment-tracker/pkg/metrics"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	amcache "k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/client-go/metadata"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +36,12 @@ const (
 	// RuntimeRiskAnnotationKey represents the annotation key for runtime risks.
 	RuntimeRiskAnnotationKey = "github.com/runtime-risks"
 )
+
+type ttlCache interface {
+	Get(k any) (any, bool)
+	Set(k any, v any, ttl time.Duration)
+	Delete(k any)
+}
 
 // PodEvent represents a pod event to be processed.
 type PodEvent struct {
@@ -60,7 +66,7 @@ type Controller struct {
 	// best effort cache to avoid redundant posts
 	// post requests are idempotent, so if this cache fails due to
 	// restarts or other events, nothing will break.
-	observedDeployments sync.Map
+	observedDeployments ttlCache
 }
 
 // New creates a new deployment tracker controller.
@@ -96,12 +102,13 @@ func New(clientset kubernetes.Interface, metadataClient metadata.Interface, name
 	}
 
 	cntrl := &Controller{
-		clientset:      clientset,
-		metadataClient: metadataClient,
-		podInformer:    podInformer,
-		workqueue:      queue,
-		apiClient:      apiClient,
-		cfg:            cfg,
+		clientset:           clientset,
+		metadataClient:      metadataClient,
+		podInformer:         podInformer,
+		workqueue:           queue,
+		apiClient:           apiClient,
+		cfg:                 cfg,
+		observedDeployments: amcache.NewExpiring(),
 	}
 
 	// Add event handlers to the informer
@@ -395,6 +402,8 @@ func (c *Controller) deploymentExists(ctx context.Context, namespace, name strin
 
 // recordContainer records a single container's deployment info.
 func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, runtimeRisks []deploymentrecord.RuntimeRisk) error {
+	var cacheKey string
+
 	dn := getARDeploymentName(pod, container, c.cfg.Template)
 	digest := getContainerDigest(pod, container.Name)
 
@@ -409,12 +418,11 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		return nil
 	}
 
-	cacheKey := getCacheKey(dn, digest)
-
 	// Check if we've already recorded this deployment
 	switch status {
 	case deploymentrecord.StatusDeployed:
-		if _, exists := c.observedDeployments.Load(cacheKey); exists {
+		cacheKey = getCacheKey(EventCreated, dn, digest)
+		if _, exists := c.observedDeployments.Get(cacheKey); exists {
 			slog.Debug("Deployment already observed, skipping post",
 				"deployment_name", dn,
 				"digest", digest,
@@ -422,9 +430,9 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 			return nil
 		}
 	case deploymentrecord.StatusDecommissioned:
-		// For delete, check if we've seen it - if not, no need to decommission
-		if _, exists := c.observedDeployments.Load(cacheKey); !exists {
-			slog.Debug("Deployment not in cache, skipping decommission",
+		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		if _, exists := c.observedDeployments.Get(cacheKey); exists {
+			slog.Debug("Deployment already deleted, skipping post",
 				"deployment_name", dn,
 				"digest", digest,
 			)
@@ -488,8 +496,16 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	// Update cache after successful post
 	switch status {
 	case deploymentrecord.StatusDeployed:
-		c.observedDeployments.Store(cacheKey, true)
+		cacheKey = getCacheKey(EventCreated, dn, digest)
+		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
+		// If there was a previous delete event, remove that
+		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		c.observedDeployments.Delete(cacheKey)
 	case deploymentrecord.StatusDecommissioned:
+		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
+		// If there was a previous created event, remove that
+		cacheKey = getCacheKey(EventCreated, dn, digest)
 		c.observedDeployments.Delete(cacheKey)
 	default:
 		return fmt.Errorf("invalid status: %s", status)
@@ -586,8 +602,8 @@ func (c *Controller) getOwnerMetadata(ctx context.Context, namespace string, own
 	return obj, nil
 }
 
-func getCacheKey(dn, digest string) string {
-	return dn + "||" + digest
+func getCacheKey(ev, dn, digest string) string {
+	return ev + "||" + dn + "||" + digest
 }
 
 // createInformerFactory creates a shared informer factory with the given resync period.
