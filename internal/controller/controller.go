@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/github/deployment-tracker/pkg/dtmetrics"
@@ -34,8 +36,16 @@ const (
 	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
 	// RuntimeRiskAnnotationKey represents the annotation key for runtime risks.
-	RuntimeRiskAnnotationKey = "github.com/runtime-risks"
+	RuntimeRiskAnnotationKey = "artifact-metadata.github.com/runtime-risks"
+	// CustomTagAnnotationKeyPattern is a regex to find custom tag annotations and extract the key.
+	CustomTagAnnotationKeyPattern = `artifact-metadata\.github\.com/([^\s]+)`
+	// MaxCustomTags is the maximum number of custom tags per deployment record.
+	MaxCustomTags = 5
+	// MaxCustomTagLength is the maximum length for a custom tag key or value.
+	MaxCustomTagLength = 100
 )
+
+var customTagAnnotationKeyRegexp = regexp.MustCompile(CustomTagAnnotationKeyPattern)
 
 type ttlCache interface {
 	Get(k any) (any, bool)
@@ -53,6 +63,7 @@ type PodEvent struct {
 // AggregatePodMetadata represents combined metadata for a pod and its ownership hierarchy.
 type AggregatePodMetadata struct {
 	RuntimeRisks map[deploymentrecord.RuntimeRisk]bool
+	Tags         map[string]string
 }
 
 // Controller is the Kubernetes controller for tracking deployments.
@@ -355,25 +366,21 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	var lastErr error
 
 	// Gather aggregate metadata for adds/updates
-	var runtimeRisks []deploymentrecord.RuntimeRisk
+	var aggPodMetadata *AggregatePodMetadata
 	if status != deploymentrecord.StatusDecommissioned {
-		aggMetadata := c.aggregateMetadata(ctx, podToPartialMetadata(pod))
-		for risk := range aggMetadata.RuntimeRisks {
-			runtimeRisks = append(runtimeRisks, risk)
-		}
-		slices.Sort(runtimeRisks)
+		aggPodMetadata = c.aggregateMetadata(ctx, podToPartialMetadata(pod))
 	}
 
 	// Record info for each container in the pod
 	for _, container := range pod.Spec.Containers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, runtimeRisks); err != nil {
+		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
 			lastErr = err
 		}
 	}
 
 	// Also record init containers
 	for _, container := range pod.Spec.InitContainers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, runtimeRisks); err != nil {
+		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
 			lastErr = err
 		}
 	}
@@ -401,7 +408,7 @@ func (c *Controller) deploymentExists(ctx context.Context, namespace, name strin
 }
 
 // recordContainer records a single container's deployment info.
-func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, runtimeRisks []deploymentrecord.RuntimeRisk) error {
+func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, aggPodMetadata *AggregatePodMetadata) error {
 	var cacheKey string
 
 	dn := getARDeploymentName(pod, container, c.cfg.Template)
@@ -445,6 +452,17 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	// Extract image name and tag
 	imageName, version := ociutil.ExtractName(container.Image)
 
+	// Format runtime risks and tags
+	var runtimeRisks []deploymentrecord.RuntimeRisk
+	var tags map[string]string
+	if aggPodMetadata != nil {
+		for risk := range aggPodMetadata.RuntimeRisks {
+			runtimeRisks = append(runtimeRisks, risk)
+		}
+		slices.Sort(runtimeRisks)
+		tags = aggPodMetadata.Tags
+	}
+
 	// Create deployment record
 	record := deploymentrecord.NewDeploymentRecord(
 		imageName,
@@ -456,6 +474,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		status,
 		dn,
 		runtimeRisks,
+		tags,
 	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
@@ -489,8 +508,9 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		"name", record.Name,
 		"deployment_name", record.DeploymentName,
 		"status", record.Status,
-		"runtime_risks", record.RuntimeRisks,
 		"digest", record.Digest,
+		"runtime_risks", record.RuntimeRisks,
+		"tags", record.Tags,
 	)
 
 	// Update cache after successful post
@@ -515,9 +535,10 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 }
 
 // aggregateMetadata returns aggregated metadata for a pod and its owners.
-func (c *Controller) aggregateMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) AggregatePodMetadata {
-	aggMetadata := AggregatePodMetadata{
+func (c *Controller) aggregateMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *AggregatePodMetadata {
+	aggMetadata := &AggregatePodMetadata{
 		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
+		Tags:         make(map[string]string),
 	}
 	queue := []*metav1.PartialObjectMetadata{obj}
 	visited := make(map[types.UID]bool)
@@ -535,7 +556,7 @@ func (c *Controller) aggregateMetadata(ctx context.Context, obj *metav1.PartialO
 		}
 		visited[current.GetUID()] = true
 
-		extractMetadataFromObject(current, &aggMetadata)
+		extractMetadataFromObject(current, aggMetadata)
 		c.addOwnersToQueue(ctx, current, &queue)
 	}
 
@@ -711,14 +732,60 @@ func getDeploymentName(pod *corev1.Pod) string {
 }
 
 // extractMetadataFromObject extracts metadata from an object.
-func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggMetadata *AggregatePodMetadata) {
+func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata *AggregatePodMetadata) {
 	annotations := obj.GetAnnotations()
+
+	// Extract runtime risks
 	if risks, exists := annotations[RuntimeRiskAnnotationKey]; exists {
 		for _, risk := range strings.Split(risks, ",") {
 			r := deploymentrecord.ValidateRuntimeRisk(risk)
 			if r != "" {
-				aggMetadata.RuntimeRisks[r] = true
+				aggPodMetadata.RuntimeRisks[r] = true
 			}
+		}
+	}
+
+	// Extract tags by sorted keys to ensure tags are deterministic
+	// if over the limit and some are dropped, the same ones will be dropped each time.
+	keys := make([]string, 0, len(annotations))
+	for key := range annotations {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	for _, key := range keys {
+		if len(aggPodMetadata.Tags) >= MaxCustomTags {
+			break
+		}
+		if RuntimeRiskAnnotationKey == key {
+			continue
+		}
+		if matches := customTagAnnotationKeyRegexp.FindStringSubmatch(key); matches != nil {
+			tagKey := matches[1]
+			tagValue := annotations[key]
+			if utf8.RuneCountInString(tagKey) > MaxCustomTagLength || utf8.RuneCountInString(tagValue) > MaxCustomTagLength {
+				slog.Warn("Tag key or value exceeds max length, skipping",
+					"object_name", obj.GetName(),
+					"kind", obj.Kind,
+					"tag_key", tagKey,
+					"tag_value", tagValue,
+					"key_length", utf8.RuneCountInString(tagKey),
+					"value_length", utf8.RuneCountInString(tagValue),
+					"max_length", MaxCustomTagLength,
+				)
+				continue
+			}
+			if _, exists := aggPodMetadata.Tags[tagKey]; exists {
+				slog.Debug("Duplicate tag key found, skipping",
+					"object_name", obj.GetName(),
+					"kind", obj.Kind,
+					"tag_key", tagKey,
+					"existing_value", aggPodMetadata.Tags[tagKey],
+					"new_value", tagValue,
+				)
+				continue
+			}
+			aggPodMetadata.Tags[tagKey] = tagValue
 		}
 	}
 }
