@@ -772,10 +772,11 @@ func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata
 				)
 				continue
 			}
-			if tagKey == "" || tagValue == "" {
-				slog.Warn("Tag key or value is empty, skipping",
+			if tagKey == "" {
+				slog.Warn("Tag key is empty, skipping",
 					"object_name", obj.GetName(),
 					"kind", obj.Kind,
+					"annotation", key,
 					"tag_key", tagKey,
 					"tag_value", tagValue,
 				)
