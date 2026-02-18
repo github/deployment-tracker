@@ -772,6 +772,15 @@ func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata
 				)
 				continue
 			}
+			if tagKey == "" || tagValue == "" {
+				slog.Warn("Tag key or value is empty, skipping",
+					"object_name", obj.GetName(),
+					"kind", obj.Kind,
+					"tag_key", tagKey,
+					"tag_value", tagValue,
+				)
+				continue
+			}
 			if _, exists := aggPodMetadata.Tags[tagKey]; exists {
 				slog.Debug("Duplicate tag key found, skipping",
 					"object_name", obj.GetName(),

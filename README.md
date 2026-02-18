@@ -101,7 +101,7 @@ Add annotations with the prefix `metadata.github.com/<key>`  (e.g. `metadata.git
 
 If a key is seen at multiple levels of the ownership hierarchy, the value from the lowest level (closest to the pod) will take precedence. For example, if a tag key is present on both the pod and its owning deployment, the value from the pod will be used.
 
-Currently, a maximum of 5 custom tags are allowed per deployment record. Custom tags will be ignored after the limit is reached, meaning tags lower in the ownership hierarchy will be prioritized. Tag keys and values must be less than 100 characters in length. Invalid tags will be ignored.
+Currently, a maximum of 5 custom tags are allowed per deployment record. Custom tags will be ignored after the limit is reached, meaning tags lower in the ownership hierarchy will be prioritized. Tag keys and values must be 100 characters or less in length. Invalid tags will be ignored.
 
 ## Kubernetes Deployment
 
