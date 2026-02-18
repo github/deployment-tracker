@@ -34,10 +34,10 @@ const (
 	EventCreated = "CREATED"
 	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
-	// RuntimeRiskAnnotationKey represents the annotation key for runtime risks.
-	RuntimeRiskAnnotationKey = "metadata.github.com/runtime-risks"
-	// CustomTagAnnotationKeyPrefix is the annotation key prefix for custom tags.
-	CustomTagAnnotationKeyPrefix = "metadata.github.com/"
+	// MetadataAnnotationPrefix is the annotation key prefix for deployment record metadata like runtime risk and tags.
+	MetadataAnnotationPrefix = "metadata.github.com/"
+	// RuntimeRisksAnnotationKey is the tag key for runtime risks. Comes after MetadataAnnotationPrefix.
+	RuntimeRisksAnnotationKey = "runtime-risks"
 	// MaxCustomTags is the maximum number of custom tags per deployment record.
 	MaxCustomTags = 5
 	// MaxCustomTagLength is the maximum length for a custom tag key or value.
@@ -733,7 +733,7 @@ func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata
 	annotations := obj.GetAnnotations()
 
 	// Extract runtime risks
-	if risks, exists := annotations[RuntimeRiskAnnotationKey]; exists {
+	if risks, exists := annotations[MetadataAnnotationPrefix+RuntimeRisksAnnotationKey]; exists {
 		for _, risk := range strings.Split(risks, ",") {
 			r := deploymentrecord.ValidateRuntimeRisk(risk)
 			if r != "" {
@@ -754,12 +754,15 @@ func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata
 		if len(aggPodMetadata.Tags) >= MaxCustomTags {
 			break
 		}
-		if RuntimeRiskAnnotationKey == key {
-			continue
-		}
-		if strings.HasPrefix(key, CustomTagAnnotationKeyPrefix) {
-			tagKey := strings.TrimPrefix(key, CustomTagAnnotationKeyPrefix)
+
+		if strings.HasPrefix(key, MetadataAnnotationPrefix) {
+			tagKey := strings.TrimPrefix(key, MetadataAnnotationPrefix)
 			tagValue := annotations[key]
+
+			if RuntimeRisksAnnotationKey == tagKey {
+				// ignore runtime risks for custom tags
+				continue
+			}
 			if utf8.RuneCountInString(tagKey) > MaxCustomTagLength || utf8.RuneCountInString(tagValue) > MaxCustomTagLength {
 				slog.Warn("Tag key or value exceeds max length, skipping",
 					"object_name", obj.GetName(),
