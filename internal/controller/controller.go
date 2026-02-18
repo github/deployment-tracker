@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -36,16 +35,14 @@ const (
 	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
 	// RuntimeRiskAnnotationKey represents the annotation key for runtime risks.
-	RuntimeRiskAnnotationKey = "artifact-metadata.github.com/runtime-risks"
-	// CustomTagAnnotationKeyPattern is a regex to find custom tag annotations and extract the key.
-	CustomTagAnnotationKeyPattern = `artifact-metadata\.github\.com/([^\s]+)`
+	RuntimeRiskAnnotationKey = "metadata.github.com/runtime-risks"
+	// CustomTagAnnotationKeyPrefix is the annotation key prefix for custom tags.
+	CustomTagAnnotationKeyPrefix = "metadata.github.com/"
 	// MaxCustomTags is the maximum number of custom tags per deployment record.
 	MaxCustomTags = 5
 	// MaxCustomTagLength is the maximum length for a custom tag key or value.
 	MaxCustomTagLength = 100
 )
-
-var customTagAnnotationKeyRegexp = regexp.MustCompile(CustomTagAnnotationKeyPattern)
 
 type ttlCache interface {
 	Get(k any) (any, bool)
@@ -760,8 +757,8 @@ func extractMetadataFromObject(obj *metav1.PartialObjectMetadata, aggPodMetadata
 		if RuntimeRiskAnnotationKey == key {
 			continue
 		}
-		if matches := customTagAnnotationKeyRegexp.FindStringSubmatch(key); matches != nil {
-			tagKey := matches[1]
+		if strings.HasPrefix(key, CustomTagAnnotationKeyPrefix) {
+			tagKey := strings.TrimPrefix(key, CustomTagAnnotationKeyPrefix)
 			tagValue := annotations[key]
 			if utf8.RuneCountInString(tagKey) > MaxCustomTagLength || utf8.RuneCountInString(tagValue) > MaxCustomTagLength {
 				slog.Warn("Tag key or value exceeds max length, skipping",
