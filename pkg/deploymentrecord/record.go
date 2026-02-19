@@ -32,15 +32,16 @@ var validRuntimeRisks = map[RuntimeRisk]bool{
 
 // DeploymentRecord represents a deployment event record.
 type DeploymentRecord struct {
-	Name                string        `json:"name"`
-	Digest              string        `json:"digest"`
-	Version             string        `json:"version,omitempty"`
-	LogicalEnvironment  string        `json:"logical_environment"`
-	PhysicalEnvironment string        `json:"physical_environment"`
-	Cluster             string        `json:"cluster"`
-	Status              string        `json:"status"`
-	DeploymentName      string        `json:"deployment_name"`
-	RuntimeRisks        []RuntimeRisk `json:"runtime_risks,omitempty"`
+	Name                string            `json:"name"`
+	Digest              string            `json:"digest"`
+	Version             string            `json:"version,omitempty"`
+	LogicalEnvironment  string            `json:"logical_environment"`
+	PhysicalEnvironment string            `json:"physical_environment"`
+	Cluster             string            `json:"cluster"`
+	Status              string            `json:"status"`
+	DeploymentName      string            `json:"deployment_name"`
+	RuntimeRisks        []RuntimeRisk     `json:"runtime_risks,omitempty"`
+	Tags                map[string]string `json:"tags,omitempty"`
 }
 
 // NewDeploymentRecord creates a new DeploymentRecord with the given status.
@@ -48,7 +49,7 @@ type DeploymentRecord struct {
 //
 //nolint:revive
 func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
-	cluster, status, deploymentName string, runtimeRisks []RuntimeRisk) *DeploymentRecord {
+	cluster, status, deploymentName string, runtimeRisks []RuntimeRisk, tags map[string]string) *DeploymentRecord {
 	// Validate status
 	if status != StatusDeployed && status != StatusDecommissioned {
 		status = StatusDeployed // default to deployed if invalid
@@ -64,6 +65,7 @@ func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
 		Status:              status,
 		DeploymentName:      deploymentName,
 		RuntimeRisks:        runtimeRisks,
+		Tags:                tags,
 	}
 }
 

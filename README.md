@@ -83,12 +83,25 @@ The `DN_TEMPLATE` supports the following placeholders:
 - `{{deploymentName}}` - Name of the owning Deployment
 - `{{containerName}}` - Container name
 
-## Runtime Risks
+## Annotations 
+Runtime risks and custom tags can be added to deployment records using annotations. Annotations will be aggregated from the pod and its owner reference objects (e.g. Deployment, ReplicaSet) so they can be added at any level of the ownership hierarchy.
 
-You can track runtime risks through annotations. Add the annotation `github.com/runtime-risks`, with a comma-separated list of supported runtime risk values. Annotations are aggregated from the pod and its owner reference objects. 
+### Runtime Risks
+
+Runtime risks are risks associated with the deployment of an artifact. These risks can be used to filter GitHub Advanced Security (GHAS) alerts and add context to alert prioritization. 
+
+Add the annotation `metadata.github.com/runtime-risks`, with a comma-separated list of supported runtime risk values. Annotations are aggregated from the pod and its owner reference objects. 
 
 Currently supported runtime risks can be found in the [Create Deployment Record API docs](https://docs.github.com/en/rest/orgs/artifact-metadata?apiVersion=2022-11-28#create-an-artifact-deployment-record). Invalid runtime risk values will be ignored.
 
+### Custom Tags
+You can add custom tags to your deployment records to help filter and organize them in GitHub.
+
+Add annotations with the prefix `metadata.github.com/<key>`  (e.g. `metadata.github.com/team: payments`) to add a custom tag. Annotations are aggregated from the pod and its owner reference objects.
+
+If a key is seen at multiple levels of the ownership hierarchy, the value from the lowest level (closest to the pod) will take precedence. For example, if a tag key is present on both the pod and its owning deployment, the value from the pod will be used.
+
+Currently, a maximum of 5 custom tags are allowed per deployment record. Custom tags will be ignored after the limit is reached, meaning tags lower in the ownership hierarchy will be prioritized. Tag keys and values must be 100 characters or less in length. Invalid tags will be ignored.
 
 ## Kubernetes Deployment
 
