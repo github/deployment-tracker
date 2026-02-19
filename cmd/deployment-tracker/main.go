@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/github/deployment-tracker/internal/controller"
-	"k8s.io/client-go/metadata"
+	"github.com/github/deployment-tracker/internal/metadata"
+	k8smetadata "k8s.io/client-go/metadata"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
@@ -114,12 +115,15 @@ func main() {
 	}
 
 	// Create metadata client
-	metadataClient, err := metadata.NewForConfig(k8sCfg)
+	metadataClient, err := k8smetadata.NewForConfig(k8sCfg)
 	if err != nil {
 		slog.Error("Error creating Kubernetes metadata client",
 			"error", err)
 		os.Exit(1)
 	}
+
+	// Create MetadataService
+	metadataService := metadata.NewMetadataService(metadataClient)
 
 	// Start the metrics server
 	var promSrv = &http.Server{
@@ -160,7 +164,7 @@ func main() {
 		cancel()
 	}()
 
-	cntrl, err := controller.New(clientset, metadataClient, namespace, excludeNamespaces, &cntrlCfg)
+	cntrl, err := controller.New(clientset, metadataService, namespace, excludeNamespaces, &cntrlCfg)
 	if err != nil {
 		slog.Error("Failed to create controller",
 			"error", err)
