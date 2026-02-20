@@ -195,7 +195,7 @@ func TestExtractMetadataFromObject(t *testing.T) {
 	}
 }
 
-func TestAggregatePodMetadata(t *testing.T) {
+func TestBuildAggregatePodMetadata(t *testing.T) {
 	tests := []struct {
 		name                 string
 		pod                  *metav1.PartialObjectMetadata
@@ -331,7 +331,7 @@ func TestAggregatePodMetadata(t *testing.T) {
 			fakeClient := metadatafake.NewSimpleMetadataClient(scheme, tt.clusterObjects...)
 			m := NewAggregator(fakeClient)
 
-			result := m.AggregatePodMetadata(context.Background(), tt.pod)
+			result := m.BuildAggregatePodMetadata(context.Background(), tt.pod)
 
 			if len(result.RuntimeRisks) != len(tt.expectedRuntimeRisks) {
 				t.Errorf("RuntimeRisks count = %d, expected %d", len(result.RuntimeRisks), len(tt.expectedRuntimeRisks))
@@ -354,7 +354,7 @@ func TestAggregatePodMetadata(t *testing.T) {
 	}
 }
 
-func TestAggregatePodMetadata_OwnerFetchError(t *testing.T) {
+func TestBuildAggregatePodMetadata_OwnerFetchError(t *testing.T) {
 	scheme := metadatafake.NewTestScheme()
 	_ = metav1.AddMetaToScheme(scheme)
 	scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"}, &metav1.PartialObjectMetadata{})
@@ -370,7 +370,7 @@ func TestAggregatePodMetadata_OwnerFetchError(t *testing.T) {
 		MetadataAnnotationPrefix + "team": "platform",
 	}, []metav1.OwnerReference{ownerRef("ReplicaSet", "my-rs", "rs-1")})
 
-	result := m.AggregatePodMetadata(context.Background(), pod)
+	result := m.BuildAggregatePodMetadata(context.Background(), pod)
 
 	if len(result.RuntimeRisks) != 0 {
 		t.Errorf("expected no runtime risks, got %v", result.RuntimeRisks)

@@ -40,7 +40,7 @@ type ttlCache interface {
 }
 
 type podMetadataAggregator interface {
-	AggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *metadata.AggregatePodMetadata
+	BuildAggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *metadata.AggregatePodMetadata
 }
 
 // PodEvent represents a pod event to be processed.
@@ -352,7 +352,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	// Gather aggregate metadata for adds/updates
 	var aggPodMetadata *metadata.AggregatePodMetadata
 	if status != deploymentrecord.StatusDecommissioned {
-		aggPodMetadata = c.metadataAggregator.AggregatePodMetadata(ctx, podToPartialMetadata(pod))
+		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
 	}
 
 	// Record info for each container in the pod

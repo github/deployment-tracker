@@ -44,8 +44,8 @@ func NewAggregator(metadataClient k8smetadata.Interface) *Aggregator {
 	}
 }
 
-// AggregatePodMetadata takes a pod's partial object metadata and traverses its ownership hierarchy to return AggregatePodMetadata.
-func (m *Aggregator) AggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *AggregatePodMetadata {
+// BuildAggregatePodMetadata takes a pod's partial object metadata and traverses its ownership hierarchy to return AggregatePodMetadata.
+func (m *Aggregator) BuildAggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *AggregatePodMetadata {
 	aggMetadata := &AggregatePodMetadata{
 		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
 		Tags:         make(map[string]string),
@@ -111,7 +111,7 @@ func (m *Aggregator) getOwnerMetadata(ctx context.Context, namespace string, own
 	case "Deployment":
 		gvr.Resource = "deployments"
 	default:
-		slog.Debug("Unsupported owner kind for runtime risk collection",
+		slog.Debug("Unsupported owner kind for metadata collection",
 			"kind", owner.Kind,
 			"name", owner.Name,
 		)
