@@ -122,8 +122,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create MetadataService
-	metadataService := metadata.NewMetadataService(metadataClient)
+	// Create metadata aggregator
+	metadataAggregator := metadata.NewAggregator(metadataClient)
 
 	// Start the metrics server
 	var promSrv = &http.Server{
@@ -164,7 +164,7 @@ func main() {
 		cancel()
 	}()
 
-	cntrl, err := controller.New(clientset, metadataService, namespace, excludeNamespaces, &cntrlCfg)
+	cntrl, err := controller.New(clientset, metadataAggregator, namespace, excludeNamespaces, &cntrlCfg)
 	if err != nil {
 		slog.Error("Failed to create controller",
 			"error", err)

@@ -26,7 +26,8 @@ const (
 	MaxCustomTagLength = 100
 )
 
-type MetadataService struct {
+// Aggregator uses the Kubernetes metadata client to aggregate metadata for a pod and its ownership hierarchy.
+type Aggregator struct {
 	metadataClient k8smetadata.Interface
 }
 
@@ -36,13 +37,15 @@ type AggregatePodMetadata struct {
 	Tags         map[string]string
 }
 
-func NewMetadataService(metadataClient k8smetadata.Interface) *MetadataService {
-	return &MetadataService{
+// NewAggregator creates a new Aggregator with a Kubernetes metadata client.
+func NewAggregator(metadataClient k8smetadata.Interface) *Aggregator {
+	return &Aggregator{
 		metadataClient: metadataClient,
 	}
 }
 
-func (ms *MetadataService) AggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *AggregatePodMetadata {
+// AggregatePodMetadata takes a pod's partial object metadata and traverses its ownership hierarchy to return AggregatePodMetadata.
+func (m *Aggregator) AggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *AggregatePodMetadata {
 	aggMetadata := &AggregatePodMetadata{
 		RuntimeRisks: make(map[deploymentrecord.RuntimeRisk]bool),
 		Tags:         make(map[string]string),
@@ -64,7 +67,7 @@ func (ms *MetadataService) AggregatePodMetadata(ctx context.Context, obj *metav1
 		visited[current.GetUID()] = true
 
 		extractMetadataFromObject(current, aggMetadata)
-		ms.addOwnersToQueue(ctx, current, &queue)
+		m.addOwnersToQueue(ctx, current, &queue)
 	}
 
 	return aggMetadata
@@ -72,11 +75,11 @@ func (ms *MetadataService) AggregatePodMetadata(ctx context.Context, obj *metav1
 
 // addOwnersToQueue takes a current object and looks up its owners, adding them to the queue for processing
 // to collect their metadata.
-func (ms *MetadataService) addOwnersToQueue(ctx context.Context, current *metav1.PartialObjectMetadata, queue *[]*metav1.PartialObjectMetadata) {
+func (m *Aggregator) addOwnersToQueue(ctx context.Context, current *metav1.PartialObjectMetadata, queue *[]*metav1.PartialObjectMetadata) {
 	ownerRefs := current.GetOwnerReferences()
 
 	for _, owner := range ownerRefs {
-		ownerObj, err := ms.getOwnerMetadata(ctx, current.GetNamespace(), owner)
+		ownerObj, err := m.getOwnerMetadata(ctx, current.GetNamespace(), owner)
 		if err != nil {
 			slog.Warn("Failed to get owner object for metadata collection",
 				"namespace", current.GetNamespace(),
@@ -96,7 +99,7 @@ func (ms *MetadataService) addOwnersToQueue(ctx context.Context, current *metav1
 }
 
 // getOwnerMetadata retrieves partial object metadata for an owner ref.
-func (ms *MetadataService) getOwnerMetadata(ctx context.Context, namespace string, owner metav1.OwnerReference) (*metav1.PartialObjectMetadata, error) {
+func (m *Aggregator) getOwnerMetadata(ctx context.Context, namespace string, owner metav1.OwnerReference) (*metav1.PartialObjectMetadata, error) {
 	gvr := schema.GroupVersionResource{
 		Group:   "apps",
 		Version: "v1",
@@ -115,7 +118,7 @@ func (ms *MetadataService) getOwnerMetadata(ctx context.Context, namespace strin
 		return nil, nil
 	}
 
-	obj, err := ms.metadataClient.Resource(gvr).Namespace(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+	obj, err := m.metadataClient.Resource(gvr).Namespace(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			slog.Debug("Owner object not found for metadata collection",

@@ -39,6 +39,10 @@ type ttlCache interface {
 	Delete(k any)
 }
 
+type podMetadataAggregator interface {
+	AggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *metadata.AggregatePodMetadata
+}
+
 // PodEvent represents a pod event to be processed.
 type PodEvent struct {
 	Key        string
@@ -48,12 +52,12 @@ type PodEvent struct {
 
 // Controller is the Kubernetes controller for tracking deployments.
 type Controller struct {
-	clientset       kubernetes.Interface
-	metadataService *metadata.MetadataService
-	podInformer     cache.SharedIndexInformer
-	workqueue       workqueue.TypedRateLimitingInterface[PodEvent]
-	apiClient       *deploymentrecord.Client
-	cfg             *Config
+	clientset          kubernetes.Interface
+	metadataAggregator podMetadataAggregator
+	podInformer        cache.SharedIndexInformer
+	workqueue          workqueue.TypedRateLimitingInterface[PodEvent]
+	apiClient          *deploymentrecord.Client
+	cfg                *Config
 	// best effort cache to avoid redundant posts
 	// post requests are idempotent, so if this cache fails due to
 	// restarts or other events, nothing will break.
@@ -61,7 +65,7 @@ type Controller struct {
 }
 
 // New creates a new deployment tracker controller.
-func New(clientset kubernetes.Interface, metadataService *metadata.MetadataService, namespace string, excludeNamespaces string, cfg *Config) (*Controller, error) {
+func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregator, namespace string, excludeNamespaces string, cfg *Config) (*Controller, error) {
 	// Create informer factory
 	factory := createInformerFactory(clientset, namespace, excludeNamespaces)
 
@@ -94,7 +98,7 @@ func New(clientset kubernetes.Interface, metadataService *metadata.MetadataServi
 
 	cntrl := &Controller{
 		clientset:           clientset,
-		metadataService:     metadataService,
+		metadataAggregator:  metadataAggregator,
 		podInformer:         podInformer,
 		workqueue:           queue,
 		apiClient:           apiClient,
@@ -348,7 +352,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	// Gather aggregate metadata for adds/updates
 	var aggPodMetadata *metadata.AggregatePodMetadata
 	if status != deploymentrecord.StatusDecommissioned {
-		aggPodMetadata = c.metadataService.AggregatePodMetadata(ctx, podToPartialMetadata(pod))
+		aggPodMetadata = c.metadataAggregator.AggregatePodMetadata(ctx, podToPartialMetadata(pod))
 	}
 
 	// Record info for each container in the pod
