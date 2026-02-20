@@ -39,6 +39,10 @@ type ttlCache interface {
 	Delete(k any)
 }
 
+type deploymentRecordPoster interface {
+	PostOne(ctx context.Context, record *deploymentrecord.DeploymentRecord) error
+}
+
 type podMetadataAggregator interface {
 	BuildAggregatePodMetadata(ctx context.Context, obj *metav1.PartialObjectMetadata) *metadata.AggregatePodMetadata
 }
@@ -56,7 +60,7 @@ type Controller struct {
 	metadataAggregator podMetadataAggregator
 	podInformer        cache.SharedIndexInformer
 	workqueue          workqueue.TypedRateLimitingInterface[PodEvent]
-	apiClient          *deploymentrecord.Client
+	apiClient          deploymentRecordPoster
 	cfg                *Config
 	// best effort cache to avoid redundant posts
 	// post requests are idempotent, so if this cache fails due to
