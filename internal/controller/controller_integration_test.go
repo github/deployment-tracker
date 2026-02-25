@@ -30,7 +30,7 @@ func (m *mockRecordPoster) PostOne(_ context.Context, record *deploymentrecord.D
 	return m.err
 }
 
-// Helper to read captured records safely
+// Helper that allows tests to read captured records safely
 func (m *mockRecordPoster) getRecords() []*deploymentrecord.DeploymentRecord {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -207,11 +207,52 @@ func deletePod(t *testing.T, clientset *kubernetes.Clientset, namespace, name st
 	}
 }
 
+// pollForRecords polls until the mock has at least minCount records, then returns them.
+func pollForRecords(t *testing.T, mock *mockRecordPoster, minCount int, timeout time.Duration) []*deploymentrecord.DeploymentRecord {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		records := mock.getRecords()
+		if len(records) >= minCount {
+			return records
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for at least %d records, got %d", minCount, len(records))
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// assertNoNewRecords polls for the given duration and fails if the record count deviates from expectedCount.
+func assertNoNewRecords(t *testing.T, mock *mockRecordPoster, expectedCount int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case <-deadline:
+			if got := len(mock.getRecords()); got != expectedCount {
+				t.Fatalf("expected %d records, got %d", expectedCount, got)
+			}
+			return
+		case <-time.After(100 * time.Millisecond):
+			if got := len(mock.getRecords()); got != expectedCount {
+				t.Fatalf("expected %d records, got %d", expectedCount, got)
+			}
+		}
+	}
+}
+
 func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	namespace := "test-namespace"
 	testEnv, cancel, clientset, mock := setup(t, namespace)
-	defer testEnv.Stop()
-	defer cancel()
+	defer func(testEnv *envtest.Environment, cancelFunc context.CancelFunc) {
+		_ = testEnv.Stop()
+		cancel()
+	}(testEnv, cancel)
 
 	// Create deployment, replicaset, and pod; expect 1 record
 	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "test-deployment")
@@ -228,69 +269,38 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 		UID:        replicaSet.UID,
 	}}, namespace, "test-deployment-123456-1")
 
-	pollTime := time.After(5 * time.Second)
-	for {
-		records := mock.getRecords()
-		if len(records) > 0 {
-			if len(records) != 1 {
-				t.Fatalf("expected 1 record, got %d", len(records))
-			}
-			if records[0].Status != deploymentrecord.StatusDeployed {
-				t.Errorf("expected %s, got %s", deploymentrecord.StatusDeployed, records[0].Status)
-			}
-			break
-		}
-		select {
-		case <-pollTime:
-			t.Fatal("timed out waiting for deployment record")
-		case <-time.After(100 * time.Millisecond):
-		}
+	records := pollForRecords(t, mock, 1, 5*time.Second)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].Status != deploymentrecord.StatusDeployed {
+		t.Errorf("expected %s, got %s", deploymentrecord.StatusDeployed, records[0].Status)
 	}
 
-	// Create another pod in replicaset; the dedup cache should prevent a new record
-	// but since processing is async, both pods may be processed before the cache is set.
+	// Create another pod in replicaset; the dedup cache should prevent a new record as there is only one worker
+	// and no risk of multiple works processing before cache is set.
 	_ = makePod(t, clientset, []metav1.OwnerReference{{
 		APIVersion: "apps/v1",
 		Kind:       "ReplicaSet",
 		Name:       replicaSet.Name,
 		UID:        replicaSet.UID,
 	}}, namespace, "test-deployment-123456-2")
-
-	time.Sleep(5 * time.Second)
-	recordsAfterSecondPod := len(mock.getRecords())
-	if recordsAfterSecondPod > 2 {
-		t.Fatalf("expected at most 2 records after second pod, got %d", recordsAfterSecondPod)
-	}
+	assertNoNewRecords(t, mock, 1, 5*time.Second)
 
 	// Delete second pod; still expect 1 record
 	deletePod(t, clientset, namespace, "test-deployment-123456-2")
-
-	time.Sleep(5 * time.Second) // wait to see if any new records are created
-	if len(mock.getRecords()) != 1 {
-		t.Fatalf("still expected 1 record after deleting second pod, got %d", len(mock.getRecords()))
-	}
+	assertNoNewRecords(t, mock, 1, 5*time.Second)
 
 	// Delete deployment, replicaset, and first pod; expect 2 records
 	deleteDeployment(t, clientset, namespace, "test-deployment")
 	deleteReplicaSet(t, clientset, namespace, "test-deployment-123456")
 	deletePod(t, clientset, namespace, "test-deployment-123456-1")
 
-	pollTime = time.After(5 * time.Second)
-	for {
-		records := mock.getRecords()
-		if len(records) > 1 {
-			if len(records) != 2 {
-				t.Fatalf("expected 2 records after deletion, got %d", len(records))
-			}
-			if records[1].Status != deploymentrecord.StatusDecommissioned {
-				t.Errorf("expected second record to be %s, got %s", deploymentrecord.StatusDecommissioned, records[1].Status)
-			}
-			break
-		}
-		select {
-		case <-pollTime:
-			t.Fatalf("timed out waiting for more than one record, got %d", len(records))
-		case <-time.After(100 * time.Millisecond):
-		}
+	records = pollForRecords(t, mock, 2, 5*time.Second)
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records after deletion, got %d", len(records))
+	}
+	if records[1].Status != deploymentrecord.StatusDecommissioned {
+		t.Errorf("expected second record to be %s, got %s", deploymentrecord.StatusDecommissioned, records[1].Status)
 	}
 }
