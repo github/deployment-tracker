@@ -111,8 +111,8 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 	if err != nil {
 		t.Fatalf("failed to create controller: %v", err)
 	}
-	mockDeploymentrecord := &mockRecordPoster{}
-	ctrl.apiClient = mockDeploymentrecord
+	mockDeploymentRecordPoster := &mockRecordPoster{}
+	ctrl.apiClient = mockDeploymentRecordPoster
 
 	go func() {
 		_ = ctrl.Run(ctx, 1)
@@ -121,7 +121,7 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 		t.Fatal("timed out waiting for informer cache to sync")
 	}
 
-	return clientset, mockDeploymentrecord
+	return clientset, mockDeploymentRecordPoster
 }
 
 func makeDeployment(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *appsv1.Deployment {
@@ -284,7 +284,7 @@ func deletePod(t *testing.T, clientset *kubernetes.Clientset, namespace, name st
 	}
 }
 
-func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
+func TestControllerIntegration_KubernetesDeploymentLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

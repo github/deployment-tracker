@@ -20,3 +20,6 @@ fmt:
 
 test:
 	KUBEBUILDER_ASSETS=$$(setup-envtest use -p path) go test ./...
+
+test-short:
+	go test -short ./...
