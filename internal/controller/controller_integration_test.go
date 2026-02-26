@@ -179,14 +179,63 @@ func makePod(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.Owne
 		t.Fatalf("failed to create Pod: %v", err)
 	}
 
-	created.Status.Phase = corev1.PodRunning
-	created.Status.ContainerStatuses = []corev1.ContainerStatus{{
+	// First set the pod to Pending phase
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	// Then transition to Running
+	pending.Status.Phase = corev1.PodRunning
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:    "app",
 		ImageID: "docker-pullable://nginx@sha256:abc123def456",
 	}}
-	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
 	if err != nil {
-		t.Fatalf("failed to update Pod status: %v", err)
+		t.Fatalf("failed to update Pod status to Running: %v", err)
+	}
+	return updated
+}
+
+func makePodWithInitContainer(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{Name: "init", Image: "busybox:latest"}},
+			Containers:     []corev1.Container{{Name: "app", Image: "nginx:latest"}},
+		},
+	}
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Pod: %v", err)
+	}
+
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	pending.Status.Phase = corev1.PodRunning
+	pending.Status.InitContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "init",
+		ImageID: "docker-pullable://busybox@sha256:initdigest789",
+	}}
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "app",
+		ImageID: "docker-pullable://nginx@sha256:abc123def456",
+	}}
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Running: %v", err)
 	}
 	return updated
 }
@@ -242,7 +291,7 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return len(mock.getRecords()) >= 1
-	}, 5*time.Second, 100*time.Millisecond)
+	}, 3*time.Second, 100*time.Millisecond)
 	records := mock.getRecords()
 	require.Len(t, records, 1)
 	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
@@ -257,13 +306,13 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 	}}, namespace, "test-deployment-123456-2")
 	require.Never(t, func() bool {
 		return len(mock.getRecords()) != 1
-	}, 5*time.Second, 100*time.Millisecond)
+	}, 3*time.Second, 100*time.Millisecond)
 
 	// Delete second pod; still expect 1 record
 	deletePod(t, clientset, namespace, "test-deployment-123456-2")
 	require.Never(t, func() bool {
 		return len(mock.getRecords()) != 1
-	}, 5*time.Second, 100*time.Millisecond)
+	}, 3*time.Second, 100*time.Millisecond)
 
 	// Delete deployment, replicaset, and first pod; expect 2 records
 	deleteDeployment(t, clientset, namespace, "test-deployment")
@@ -272,8 +321,65 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return len(mock.getRecords()) >= 2
-	}, 5*time.Second, 100*time.Millisecond)
+	}, 3*time.Second, 100*time.Millisecond)
 	records = mock.getRecords()
 	require.Len(t, records, 2)
 	assert.Equal(t, deploymentrecord.StatusDecommissioned, records[1].Status)
+}
+
+func TestControllerIntegration_InitContainers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	namespace := "test-init-containers"
+	clientset, mock := setup(t, namespace)
+
+	// Create deployment, replicaset, and pod with an init container; expect 2 records (one per container)
+	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "init-deployment")
+	replicaSet := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment.Name,
+		UID:        deployment.UID,
+	}}, namespace, "init-deployment-abc123")
+	_ = makePodWithInitContainer(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet.Name,
+		UID:        replicaSet.UID,
+	}}, namespace, "init-deployment-abc123-1")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 2
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 2)
+
+	// Both records should be deployed; collect deployment names to verify both containers are recorded
+	deploymentNames := make([]string, len(records))
+	for i, r := range records {
+		assert.Equal(t, deploymentrecord.StatusDeployed, r.Status)
+		deploymentNames[i] = r.DeploymentName
+	}
+	assert.Contains(t, deploymentNames, "test-init-containers/init-deployment/app")
+	assert.Contains(t, deploymentNames, "test-init-containers/init-deployment/init")
+
+	// Delete deployment, replicaset, and pod; expect 2 more decommissioned records (one per container)
+	deleteDeployment(t, clientset, namespace, "init-deployment")
+	deleteReplicaSet(t, clientset, namespace, "init-deployment-abc123")
+	deletePod(t, clientset, namespace, "init-deployment-abc123-1")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 4
+	}, 3*time.Second, 100*time.Millisecond)
+	records = mock.getRecords()
+	require.Len(t, records, 4)
+
+	decommissionedNames := make([]string, 0, 2)
+	for _, r := range records[2:] {
+		assert.Equal(t, deploymentrecord.StatusDecommissioned, r.Status)
+		decommissionedNames = append(decommissionedNames, r.DeploymentName)
+	}
+	assert.Contains(t, decommissionedNames, "test-init-containers/init-deployment/app")
+	assert.Contains(t, decommissionedNames, "test-init-containers/init-deployment/init")
 }
