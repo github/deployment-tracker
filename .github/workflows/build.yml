@@ -42,7 +42,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install setup-envtest
-        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.18.5
       - name: Test
         run: |
           make test

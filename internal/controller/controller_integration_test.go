@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func (m *mockRecordPoster) getRecords() []*deploymentrecord.DeploymentRecord {
 
 const testControllerNamespace = "test-controller-ns"
 
-func setup(t *testing.T, onlyNamepsace string, excludeNamespaces string) (*kubernetes.Clientset, *mockRecordPoster) {
+func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kubernetes.Clientset, *mockRecordPoster) {
 	t.Helper()
 	testEnv := &envtest.Environment{}
 
@@ -69,6 +70,24 @@ func setup(t *testing.T, onlyNamepsace string, excludeNamespaces string) (*kuber
 		t.Fatalf("failed to create namespace: %v", err)
 	}
 
+	if onlyNamespace != "" {
+		ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: onlyNamespace}}
+		_, err = clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("failed to create onlyNamespace: %v", err)
+		}
+	}
+
+	if excludeNamespaces != "" {
+		for _, nsName := range strings.Split(excludeNamespaces, ",") {
+			ns = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+			_, err = clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("failed to create excludeNamespace %s: %v", nsName, err)
+			}
+		}
+	}
+
 	metadataClient, err := k8smetadata.NewForConfig(cfg)
 	if err != nil {
 		t.Fatalf("failed to create Kubernetes metadata client: %v", err)
@@ -79,7 +98,7 @@ func setup(t *testing.T, onlyNamepsace string, excludeNamespaces string) (*kuber
 	ctrl, err := New(
 		clientset,
 		metadataAggregator,
-		onlyNamepsace,
+		onlyNamespace,
 		excludeNamespaces,
 		&Config{
 			"{{namespace}}/{{deploymentName}}/{{containerName}}",
@@ -301,7 +320,7 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
 
 	// Create another pod in replicaset; the dedup cache should prevent a new record as there is only one worker
-	// and no risk of multiple works processing before cache is set.
+	// and no risk of multiple workers processing before cache is set.
 	_ = makePod(t, clientset, []metav1.OwnerReference{{
 		APIVersion: "apps/v1",
 		Kind:       "ReplicaSet",
@@ -398,13 +417,9 @@ func TestControllerIntegration_OnlyWatchOneNamespace(t *testing.T) {
 	namespace2 := "namespace2"
 	clientset, mock := setup(t, namespace1, "")
 
-	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
-	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("failed to create namespace: %v", err)
-	}
+	// Make invalid namespaces
 	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace2}}
-	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns2, metav1.CreateOptions{})
+	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns2, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("failed to create namespace: %v", err)
 	}
@@ -456,18 +471,9 @@ func TestControllerIntegration_ExcludeNamespaces(t *testing.T) {
 	namespace3 := "namespace3"
 	clientset, mock := setup(t, "", fmt.Sprintf("%s,%s", namespace2, namespace3))
 
+	// Make valid namespace
 	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
 	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("failed to create namespace: %v", err)
-	}
-	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace2}}
-	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns2, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("failed to create namespace: %v", err)
-	}
-	ns3 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace3}}
-	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns3, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("failed to create namespace: %v", err)
 	}
