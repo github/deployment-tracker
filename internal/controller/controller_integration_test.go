@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func (m *mockRecordPoster) getRecords() []*deploymentrecord.DeploymentRecord {
 	return slices.Clone(m.records)
 }
 
-func setup(t *testing.T, namespace string) (*kubernetes.Clientset, *mockRecordPoster) {
+func setup(t *testing.T, namespace string, onlyNamepsace string, excludeNamespaces string) (*kubernetes.Clientset, *mockRecordPoster) {
 	t.Helper()
 	testEnv := &envtest.Environment{}
 
@@ -76,8 +77,8 @@ func setup(t *testing.T, namespace string) (*kubernetes.Clientset, *mockRecordPo
 	ctrl, err := New(
 		clientset,
 		metadataAggregator,
-		"",
-		"",
+		onlyNamepsace,
+		excludeNamespaces,
 		&Config{
 			"{{namespace}}/{{deploymentName}}/{{containerName}}",
 			"test-logical-env",
@@ -271,8 +272,9 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	namespace := "test-namespace"
-	clientset, mock := setup(t, namespace)
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, namespace, "", "")
 
 	// Create deployment, replicaset, and pod; expect 1 record
 	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "test-deployment")
@@ -331,8 +333,9 @@ func TestControllerIntegration_InitContainers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	namespace := "test-init-containers"
-	clientset, mock := setup(t, namespace)
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, namespace, "", "")
 
 	// Create deployment, replicaset, and pod with an init container; expect 2 records (one per container)
 	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "init-deployment")
@@ -361,8 +364,8 @@ func TestControllerIntegration_InitContainers(t *testing.T) {
 		assert.Equal(t, deploymentrecord.StatusDeployed, r.Status)
 		deploymentNames[i] = r.DeploymentName
 	}
-	assert.Contains(t, deploymentNames, "test-init-containers/init-deployment/app")
-	assert.Contains(t, deploymentNames, "test-init-containers/init-deployment/init")
+	assert.Contains(t, deploymentNames, fmt.Sprintf("%s/init-deployment/app", namespace))
+	assert.Contains(t, deploymentNames, fmt.Sprintf("%s/init-deployment/init", namespace))
 
 	// Delete deployment, replicaset, and pod; expect 2 more decommissioned records (one per container)
 	deleteDeployment(t, clientset, namespace, "init-deployment")
@@ -380,6 +383,142 @@ func TestControllerIntegration_InitContainers(t *testing.T) {
 		assert.Equal(t, deploymentrecord.StatusDecommissioned, r.Status)
 		decommissionedNames = append(decommissionedNames, r.DeploymentName)
 	}
-	assert.Contains(t, decommissionedNames, "test-init-containers/init-deployment/app")
-	assert.Contains(t, decommissionedNames, "test-init-containers/init-deployment/init")
+	assert.Contains(t, decommissionedNames, fmt.Sprintf("%s/init-deployment/app", namespace))
+	assert.Contains(t, decommissionedNames, fmt.Sprintf("%s/init-deployment/init", namespace))
+}
+
+func TestControllerIntegration_OnlyWatchOneNamespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace1 := "namespace1"
+	namespace2 := "namespace2"
+	clientset, mock := setup(t, "test-controller-ns", namespace1, "")
+
+	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
+	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace2}}
+	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Make new deployment in namespace1; expect 1 record
+	deployment1 := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace1, "init-deployment")
+	replicaSet1 := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment1.Name,
+		UID:        deployment1.UID,
+	}}, namespace1, "init-deployment-abc123")
+	_ = makePod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet1.Name,
+		UID:        replicaSet1.UID,
+	}}, namespace1, "init-deployment-abc123-1")
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) == 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Make new deployment in namespace2; expect no new records
+	deployment2 := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace2, "init-deployment")
+	replicaSet2 := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment2.Name,
+		UID:        deployment2.UID,
+	}}, namespace2, "init-deployment-abc123")
+	_ = makePod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet2.Name,
+		UID:        replicaSet2.UID,
+	}}, namespace2, "init-deployment-abc123-1")
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func TestControllerIntegration_ExcludeNamespaces(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace1 := "namespace1"
+	namespace2 := "namespace2"
+	namespace3 := "namespace3"
+	clientset, mock := setup(t, "test-controller-ns", "", fmt.Sprintf("%s,%s", namespace2, namespace3))
+
+	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
+	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace2}}
+	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+	ns3 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace3}}
+	_, err = clientset.CoreV1().Namespaces().Create(context.Background(), ns3, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create namespace: %v", err)
+	}
+
+	// Make new deployment in namespace1; expect 1 record
+	deployment1 := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace1, "init-deployment")
+	replicaSet1 := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment1.Name,
+		UID:        deployment1.UID,
+	}}, namespace1, "init-deployment-abc123")
+	_ = makePod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet1.Name,
+		UID:        replicaSet1.UID,
+	}}, namespace1, "init-deployment-abc123-1")
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) == 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Make new deployment in namespace2; expect no new records
+	deployment2 := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace2, "init-deployment")
+	replicaSet2 := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment2.Name,
+		UID:        deployment2.UID,
+	}}, namespace2, "init-deployment-abc123")
+	_ = makePod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet2.Name,
+		UID:        replicaSet2.UID,
+	}}, namespace2, "init-deployment-abc123-1")
+
+	// Make new deployment in namespace 3; expect no new records
+	deployment3 := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace3, "init-deployment")
+	replicaSet3 := makeReplicaSet(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Name:       deployment3.Name,
+		UID:        deployment3.UID,
+	}}, namespace3, "init-deployment-abc123")
+	_ = makePod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "ReplicaSet",
+		Name:       replicaSet3.Name,
+		UID:        replicaSet3.UID,
+	}}, namespace3, "init-deployment-abc123-1")
+
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
 }
