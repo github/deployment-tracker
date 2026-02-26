@@ -41,7 +41,9 @@ func (m *mockRecordPoster) getRecords() []*deploymentrecord.DeploymentRecord {
 	return slices.Clone(m.records)
 }
 
-func setup(t *testing.T, namespace string, onlyNamepsace string, excludeNamespaces string) (*kubernetes.Clientset, *mockRecordPoster) {
+const testControllerNamespace = "test-controller-ns"
+
+func setup(t *testing.T, onlyNamepsace string, excludeNamespaces string) (*kubernetes.Clientset, *mockRecordPoster) {
 	t.Helper()
 	testEnv := &envtest.Environment{}
 
@@ -61,7 +63,7 @@ func setup(t *testing.T, namespace string, onlyNamepsace string, excludeNamespac
 		_ = testEnv.Stop()
 	})
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testControllerNamespace}}
 	_, err = clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("failed to create namespace: %v", err)
@@ -274,7 +276,7 @@ func TestControllerIntegration_KubernetesDeployment(t *testing.T) {
 	}
 	t.Parallel()
 	namespace := "test-controller-ns"
-	clientset, mock := setup(t, namespace, "", "")
+	clientset, mock := setup(t, "", "")
 
 	// Create deployment, replicaset, and pod; expect 1 record
 	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "test-deployment")
@@ -335,7 +337,7 @@ func TestControllerIntegration_InitContainers(t *testing.T) {
 	}
 	t.Parallel()
 	namespace := "test-controller-ns"
-	clientset, mock := setup(t, namespace, "", "")
+	clientset, mock := setup(t, "", "")
 
 	// Create deployment, replicaset, and pod with an init container; expect 2 records (one per container)
 	deployment := makeDeployment(t, clientset, []metav1.OwnerReference{}, namespace, "init-deployment")
@@ -394,7 +396,7 @@ func TestControllerIntegration_OnlyWatchOneNamespace(t *testing.T) {
 	t.Parallel()
 	namespace1 := "namespace1"
 	namespace2 := "namespace2"
-	clientset, mock := setup(t, "test-controller-ns", namespace1, "")
+	clientset, mock := setup(t, namespace1, "")
 
 	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
 	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
@@ -452,7 +454,7 @@ func TestControllerIntegration_ExcludeNamespaces(t *testing.T) {
 	namespace1 := "namespace1"
 	namespace2 := "namespace2"
 	namespace3 := "namespace3"
-	clientset, mock := setup(t, "test-controller-ns", "", fmt.Sprintf("%s,%s", namespace2, namespace3))
+	clientset, mock := setup(t, "", fmt.Sprintf("%s,%s", namespace2, namespace3))
 
 	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace1}}
 	_, err := clientset.CoreV1().Namespaces().Create(context.Background(), ns1, metav1.CreateOptions{})
