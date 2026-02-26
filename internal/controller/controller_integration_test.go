@@ -101,16 +101,11 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 		onlyNamespace,
 		excludeNamespaces,
 		&Config{
-			"{{namespace}}/{{deploymentName}}/{{containerName}}",
-			"test-logical-env",
-			"test physical-env",
-			"test-cluster",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"test-org",
+			Template:            "{{namespace}}/{{deploymentName}}/{{containerName}}",
+			LogicalEnvironment:  "test-logical-env",
+			PhysicalEnvironment: "test physical-env",
+			Cluster:             "test-cluster",
+			Organization:        "test-org",
 		},
 	)
 	if err != nil {
