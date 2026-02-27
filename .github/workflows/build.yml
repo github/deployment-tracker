@@ -41,6 +41,8 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version-file: go.mod
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@4dbfa5c66aa24a35003c41507385c2a91e94d404 # release-0.23
       - name: Test
         run: |
           make test
