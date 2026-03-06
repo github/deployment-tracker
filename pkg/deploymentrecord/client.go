@@ -107,6 +107,10 @@ func WithAPIToken(token string) ClientOption {
 // If an API token is also set, the GitHub App will take precedence.
 func WithGHApp(id, installID string, pkBytes []byte, pkPath string) ClientOption {
 	return func(c *Client) {
+		if len(pkBytes) > 0 && pkPath != "" {
+			panic("both GitHub App private key and private key path are set")
+		}
+
 		pid, err := strconv.Atoi(id)
 		if err != nil {
 			panic(err)
