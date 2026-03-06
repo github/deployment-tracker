@@ -105,8 +105,12 @@ func WithAPIToken(token string) ClientOption {
 // WithGHApp configures a GitHub app to use for authentication.
 // If provided values are invalid, this will panic.
 // If an API token is also set, the GitHub App will take precedence.
-func WithGHApp(id, installID, pk string) ClientOption {
+func WithGHApp(id, installID string, pkBytes []byte, pkPath string) ClientOption {
 	return func(c *Client) {
+		if len(pkBytes) > 0 && pkPath != "" {
+			panic("both GitHub App private key and private key path are set")
+		}
+
 		pid, err := strconv.Atoi(id)
 		if err != nil {
 			panic(err)
@@ -115,11 +119,21 @@ func WithGHApp(id, installID, pk string) ClientOption {
 		if err != nil {
 			panic(err)
 		}
-		c.transport, err = ghinstallation.NewKeyFromFile(
-			http.DefaultTransport,
-			int64(pid),
-			int64(piid),
-			pk)
+
+		if len(pkBytes) > 0 {
+			c.transport, err = ghinstallation.New(
+				http.DefaultTransport,
+				int64(pid),
+				int64(piid),
+				pkBytes)
+		} else {
+			c.transport, err = ghinstallation.NewKeyFromFile(
+				http.DefaultTransport,
+				int64(pid),
+				int64(piid),
+				pkPath)
+		}
+
 		if err != nil {
 			panic(err)
 		}
