@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -67,6 +68,16 @@ func main() {
 	opts := slog.HandlerOptions{Level: slog.LevelInfo}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &opts)))
 
+	var ghAppPrivateKey []byte
+	if b64Key := os.Getenv("GH_APP_PRIVATE_KEY"); b64Key != "" {
+		var err error
+		ghAppPrivateKey, err = base64.StdEncoding.DecodeString(b64Key)
+		if err != nil {
+			slog.Error("Failed to base64 decode GH_APP_PRIVATE_KEY", "error", err)
+			os.Exit(1)
+		}
+	}
+
 	var cntrlCfg = controller.Config{
 		Template:            getEnvOrDefault("DN_TEMPLATE", defaultTemplate),
 		LogicalEnvironment:  os.Getenv("LOGICAL_ENVIRONMENT"),
@@ -76,8 +87,14 @@ func main() {
 		BaseURL:             getEnvOrDefault("BASE_URL", "api.github.com"),
 		GHAppID:             getEnvOrDefault("GH_APP_ID", ""),
 		GHInstallID:         getEnvOrDefault("GH_INSTALL_ID", ""),
-		GHAppPrivateKey:     getEnvOrDefault("GH_APP_PRIV_KEY", ""),
+		GHAppPrivateKey:     ghAppPrivateKey,
+		GHAppPrivateKeyPath: getEnvOrDefault("GH_APP_PRIV_KEY_PATH", ""),
 		Organization:        os.Getenv("GITHUB_ORG"),
+	}
+
+	if len(cntrlCfg.GHAppPrivateKey) > 0 && cntrlCfg.GHAppPrivateKeyPath != "" {
+		slog.Error("Both GH_APP_PRIVATE_KEY and GH_APP_PRIV_KEY_PATH are set. Only one can be used.")
+		os.Exit(1)
 	}
 
 	if !controller.ValidTemplate(cntrlCfg.Template) {

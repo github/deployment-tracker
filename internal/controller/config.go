@@ -20,12 +20,13 @@ type Config struct {
 	PhysicalEnvironment string
 	Cluster             string
 	//nolint:gosec
-	APIToken        string
-	BaseURL         string
-	GHAppID         string
-	GHInstallID     string
-	GHAppPrivateKey string
-	Organization    string
+	APIToken            string
+	BaseURL             string
+	GHAppID             string
+	GHInstallID         string
+	GHAppPrivateKey     []byte
+	GHAppPrivateKeyPath string
+	Organization        string
 }
 
 // ValidTemplate verifies that at least one placeholder is present

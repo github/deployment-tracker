@@ -87,8 +87,13 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 	}
 	if cfg.GHAppID != "" &&
 		cfg.GHInstallID != "" &&
-		cfg.GHAppPrivateKey != "" {
-		clientOpts = append(clientOpts, deploymentrecord.WithGHApp(cfg.GHAppID, cfg.GHInstallID, cfg.GHAppPrivateKey))
+		(len(cfg.GHAppPrivateKey) > 0 || cfg.GHAppPrivateKeyPath != "") {
+		clientOpts = append(clientOpts, deploymentrecord.WithGHApp(
+			cfg.GHAppID,
+			cfg.GHInstallID,
+			cfg.GHAppPrivateKey,
+			cfg.GHAppPrivateKeyPath,
+		))
 	}
 
 	apiClient, err := deploymentrecord.NewClient(
