@@ -241,13 +241,14 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// Drain and close response body to enable connection reuse
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			dtmetrics.PostDeploymentRecordOk.Inc()
 			return nil
 		}
 
-		// Read response body for error messages
+		// Drain and close response body to enable connection reuse by reading body for error logging
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 
