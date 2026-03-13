@@ -160,6 +160,19 @@ func (c *ClientError) Unwrap() error {
 	return c.err
 }
 
+// NoArtifactError represents a 404 client response where no artifact was found.
+type NoArtifactError struct {
+	err error
+}
+
+func (n *NoArtifactError) Error() string {
+	return fmt.Sprintf("client_error: %s", n.err.Error())
+}
+
+func (n *NoArtifactError) Unwrap() error {
+	return n.err
+}
+
 // PostOne posts a single deployment record to the GitHub deployment
 // records API.
 func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
@@ -249,29 +262,47 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		}
 
 		// Drain and close response body to enable connection reuse by reading body for error logging
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
-		lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-
-		// Don't retry on client errors (4xx) except for 429
-		// (rate limit)
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
+		switch {
+		case resp.StatusCode == 429:
+			// Retry with backoff
+			dtmetrics.PostDeploymentRecordSoftFail.Inc()
+			slog.Debug("rate limited, retrying",
+				"attempt", attempt,
+				"status_code", resp.StatusCode,
+			)
+			lastErr = fmt.Errorf("rate limited, attempt %d", attempt)
+			continue
+		case resp.StatusCode == 404:
+			// No artifact found
+			dtmetrics.PostDeploymentRecordNotSaved.Inc()
+			slog.Debug("no artifact attestation found, no record created",
+				"attempt", attempt,
+				"status_code", resp.StatusCode,
+			)
+			return &NoArtifactError{err: fmt.Errorf("no artifact found")}
+		case resp.StatusCode >= 400 && resp.StatusCode < 500:
+			// Don't retry non rate limiting client errors
 			dtmetrics.PostDeploymentRecordClientError.Inc()
 			slog.Warn("client error, aborting",
 				"attempt", attempt,
-				"error", lastErr,
 				"status_code", resp.StatusCode,
-				"msg", string(body),
+				"resp_msg", string(body),
 			)
-			return &ClientError{err: lastErr}
+			return &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
+		default:
+			// Retry with backoff
+			dtmetrics.PostDeploymentRecordSoftFail.Inc()
+			slog.Debug("retriable error",
+				"attempt", attempt,
+				"status_code", resp.StatusCode,
+				"resp_msg", string(body),
+			)
+			lastErr = fmt.Errorf("server error, attempt %d", attempt)
 		}
-		dtmetrics.PostDeploymentRecordSoftFail.Inc()
-		slog.Debug("retriable server error",
-			"attempt", attempt,
-			"status_code", resp.StatusCode,
-			"msg", string(body),
-		)
 	}
 
 	dtmetrics.PostDeploymentRecordHardFail.Inc()

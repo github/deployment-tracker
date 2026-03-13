@@ -471,6 +471,12 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
+		// Return if no artifact is found
+		var noArtifactErr *deploymentrecord.NoArtifactError
+		if errors.As(err, &noArtifactErr) {
+			return nil
+		}
+
 		// Make sure to not retry on client error messages
 		var clientErr *deploymentrecord.ClientError
 		if errors.As(err, &clientErr) {

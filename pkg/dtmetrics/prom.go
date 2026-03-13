@@ -50,6 +50,14 @@ var (
 	)
 
 	//nolint: revive
+	PostDeploymentRecordNotSaved = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_not_saved",
+			Help: "The total number of successful posts with no attestation that result in no record creation",
+		},
+	)
+
+	//nolint: revive
 	PostDeploymentRecordSoftFail = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_soft_fail",
