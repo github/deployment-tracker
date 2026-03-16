@@ -273,6 +273,8 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			slog.Debug("no artifact attestation found, no record created",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
+				"container_name", record.Name,
+				"digest", record.Digest,
 			)
 			return &NoArtifactError{err: fmt.Errorf("no attestation found for %s", record.Digest)}
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
@@ -284,6 +286,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 					"attempt", attempt,
 					"status_code", resp.StatusCode,
 					"retry_after", resp.Header.Get("Retry-After"),
+					"container_name", record.Name,
 					"resp_msg", string(respBody),
 				)
 				lastErr = fmt.Errorf("rate limited, attempt %d", attempt)
@@ -294,6 +297,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			slog.Warn("client error, aborting",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
+				"container_name", record.Name,
 				"resp_msg", string(respBody),
 			)
 			return &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
@@ -303,6 +307,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			slog.Debug("retriable error",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
+				"container_name", record.Name,
 				"resp_msg", string(respBody),
 			)
 			lastErr = fmt.Errorf("server error, attempt %d", attempt)
@@ -312,6 +317,8 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	dtmetrics.PostDeploymentRecordHardFail.Inc()
 	slog.Error("all retries exhausted",
 		"count", c.retries,
-		"error", lastErr)
+		"error", lastErr,
+		"container_name", record.Name,
+	)
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
 }
