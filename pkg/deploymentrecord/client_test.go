@@ -321,7 +321,7 @@ func TestPostOne(t *testing.T) {
 		{
 			name:   "success on 200",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			},
 			wantOk: 1,
@@ -329,7 +329,7 @@ func TestPostOne(t *testing.T) {
 		{
 			name:   "success on 201",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusCreated)
 			},
 			wantOk: 1,
@@ -338,7 +338,7 @@ func TestPostOne(t *testing.T) {
 			name:    "nil record returns error",
 			record:  nil,
 			wantErr: true,
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(_ http.ResponseWriter, _ *http.Request) {
 				t.Fatal("server should not be called with nil record")
 			},
 			errContain: "record cannot be nil",
@@ -346,18 +346,19 @@ func TestPostOne(t *testing.T) {
 		{
 			name:   "404 with no artifacts found returns NoArtifactError",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"message":"no artifacts found"}`))
 			},
 			wantErr:           true,
 			errType:           &NoArtifactError{},
+			errContain:        "sha256:abc123",
 			wantNoAttestation: 1,
 		},
 		{
 			name:   "404 without no artifacts found returns ClientError",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"message":"not found"}`))
 			},
@@ -368,7 +369,7 @@ func TestPostOne(t *testing.T) {
 		{
 			name:   "400 returns ClientError",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte("bad request"))
 			},
@@ -379,7 +380,7 @@ func TestPostOne(t *testing.T) {
 		{
 			name:   "403 forbidden returns ClientError",
 			record: testRecord(),
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"message":"forbidden"}`))
 			},
@@ -391,7 +392,7 @@ func TestPostOne(t *testing.T) {
 			name:    "429 rate limit retries then fails",
 			record:  testRecord(),
 			retries: 1,
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Retry-After", "1")
 				w.WriteHeader(http.StatusTooManyRequests)
 			},
@@ -404,7 +405,7 @@ func TestPostOne(t *testing.T) {
 			name:    "403 with Retry-After header retries then fails",
 			record:  testRecord(),
 			retries: 1,
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Retry-After", "1")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"message":"rate limit"}`))
@@ -418,7 +419,7 @@ func TestPostOne(t *testing.T) {
 			name:    "403 with x-ratelimit-remaining 0 retries then fails",
 			record:  testRecord(),
 			retries: 1,
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("X-Ratelimit-Remaining", "0")
 				w.WriteHeader(http.StatusForbidden)
 			},
@@ -431,7 +432,7 @@ func TestPostOne(t *testing.T) {
 			name:    "500 server error retries then fails",
 			record:  testRecord(),
 			retries: 1,
-			handler: func(w http.ResponseWriter, r *http.Request) {
+			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte("internal error"))
 			},
@@ -446,7 +447,7 @@ func TestPostOne(t *testing.T) {
 			retries: 2,
 			handler: func() http.HandlerFunc {
 				var count atomic.Int32
-				return func(w http.ResponseWriter, r *http.Request) {
+				return func(w http.ResponseWriter, _ *http.Request) {
 					if count.Add(1) == 1 {
 						w.WriteHeader(http.StatusInternalServerError)
 						return
@@ -463,7 +464,7 @@ func TestPostOne(t *testing.T) {
 			retries: 2,
 			handler: func() http.HandlerFunc {
 				var count atomic.Int32
-				return func(w http.ResponseWriter, r *http.Request) {
+				return func(w http.ResponseWriter, _ *http.Request) {
 					if count.Add(1) == 1 {
 						w.Header().Set("Retry-After", "0")
 						w.WriteHeader(http.StatusTooManyRequests)
@@ -481,7 +482,7 @@ func TestPostOne(t *testing.T) {
 			retries: 2,
 			handler: func() http.HandlerFunc {
 				var count atomic.Int32
-				return func(w http.ResponseWriter, r *http.Request) {
+				return func(w http.ResponseWriter, _ *http.Request) {
 					if count.Add(1) == 1 {
 						w.Header().Set("Retry-After", "0")
 						w.WriteHeader(http.StatusForbidden)
@@ -535,6 +536,8 @@ func TestPostOne(t *testing.T) {
 						if !errors.As(err, &e) {
 							t.Errorf("expected ClientError, got %T: %v", err, err)
 						}
+					default:
+						t.Fatalf("unexpected error type in test: %T", target)
 					}
 				}
 				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {

@@ -184,9 +184,9 @@ The metrics exposed beyond the default Prometheus metrics are:
   outgoing HTTP POST to upload the deployment record.
 * `deptracker_post_record_ok`: the number of successful deployment
   record uploads.
-* `deptracker_post_record_rate_limited`: the number of post attempts 
+* `deptracker_post_record_rate_limited`: the number of post attempts
   that were rate limited.
-* `deptracker_post_record_no_attestation`: the number of successful 
+* `deptracker_post_record_no_attestation`: the number of successful
   posts for container digest with no matching attestation for the org.
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
   attempts to upload the deployment record.

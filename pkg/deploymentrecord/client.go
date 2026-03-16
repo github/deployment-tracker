@@ -166,9 +166,6 @@ type NoArtifactError struct {
 }
 
 func (n *NoArtifactError) Error() string {
-	if n.err == nil {
-		return "no artifact found"
-	}
 	return fmt.Sprintf("no artifact found: %s", n.err.Error())
 }
 
@@ -277,7 +274,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
 			)
-			return &NoArtifactError{}
+			return &NoArtifactError{err: fmt.Errorf("no attestation found for %s", record.Digest)}
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
 			if resp.Header.Get("retry-after") != "" || resp.Header.Get("x-ratelimit-remaining") == "0" {
 				// rate limited — retry with backoff
