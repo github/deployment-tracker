@@ -160,7 +160,7 @@ func (c *ClientError) Unwrap() error {
 	return c.err
 }
 
-// NoArtifactError represents a 404 client response where no artifact was found.
+// NoArtifactError represents a 404 client response whose body indicates "no artifacts found".
 type NoArtifactError struct {
 	err error
 }

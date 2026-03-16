@@ -53,7 +53,7 @@ var (
 	PostDeploymentRecordNoAttestation = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_no_attestation",
-			Help: "The total number of successful posts for container digest with no matching attestation for the org",
+			Help: "The total number of post attempts that resulted in no matching attestation for the container digest (404 'no artifacts found' responses)",
 		},
 	)
 
@@ -61,7 +61,7 @@ var (
 	PostDeploymentRecordRateLimited = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_rate_limited",
-			Help: "The total number of post failures due to rate limits",
+			Help: "The total number of post attempts that were rate limited",
 		},
 	)
 
