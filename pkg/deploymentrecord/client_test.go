@@ -1,9 +1,18 @@
 package deploymentrecord
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/github/deployment-tracker/pkg/dtmetrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestNewClient(t *testing.T) {
@@ -262,5 +271,333 @@ func TestValidOrgPattern(t *testing.T) {
 		if validOrgPattern.MatchString(org) {
 			t.Errorf("validOrgPattern should not match %q", org)
 		}
+	}
+}
+
+// testRecord returns a minimal valid DeploymentRecord for testing.
+func testRecord() *DeploymentRecord {
+	return NewDeploymentRecord(
+		"ghcr.io/my-org/my-image",
+		"sha256:abc123",
+		"v1.0.0",
+		"production",
+		"us-east-1",
+		"cluster-1",
+		StatusDeployed,
+		"my-deployment",
+		nil,
+		nil,
+	)
+}
+
+// allCounters returns all PostDeploymentRecord counters for snapshotting.
+func allCounters() []prometheus.Counter {
+	return []prometheus.Counter{
+		dtmetrics.PostDeploymentRecordOk,
+		dtmetrics.PostDeploymentRecordNoAttestation,
+		dtmetrics.PostDeploymentRecordRateLimited,
+		dtmetrics.PostDeploymentRecordSoftFail,
+		dtmetrics.PostDeploymentRecordHardFail,
+		dtmetrics.PostDeploymentRecordClientError,
+	}
+}
+
+func TestPostOne(t *testing.T) {
+	tests := []struct {
+		name              string
+		record            *DeploymentRecord
+		retries           int
+		handler           http.HandlerFunc
+		wantErr           bool
+		errType           any // expected error type for errors.As
+		errContain        string
+		wantOk            float64
+		wantNoAttestation float64
+		wantRateLimited   float64
+		wantSoftFail      float64
+		wantHardFail      float64
+		wantClientError   float64
+	}{
+		{
+			name:   "success on 200",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+			wantOk: 1,
+		},
+		{
+			name:   "success on 201",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+			},
+			wantOk: 1,
+		},
+		{
+			name:    "nil record returns error",
+			record:  nil,
+			wantErr: true,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("server should not be called with nil record")
+			},
+			errContain: "record cannot be nil",
+		},
+		{
+			name:   "404 with no artifacts found returns NoArtifactError",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"no artifacts found"}`))
+			},
+			wantErr:           true,
+			errType:           &NoArtifactError{},
+			wantNoAttestation: 1,
+		},
+		{
+			name:   "404 without no artifacts found returns ClientError",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"not found"}`))
+			},
+			wantErr:         true,
+			errType:         &ClientError{},
+			wantClientError: 1,
+		},
+		{
+			name:   "400 returns ClientError",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte("bad request"))
+			},
+			wantErr:         true,
+			errType:         &ClientError{},
+			wantClientError: 1,
+		},
+		{
+			name:   "403 forbidden returns ClientError",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"forbidden"}`))
+			},
+			wantErr:         true,
+			errType:         &ClientError{},
+			wantClientError: 1,
+		},
+		{
+			name:    "429 rate limit retries then fails",
+			record:  testRecord(),
+			retries: 1,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+			},
+			wantErr:         true,
+			errContain:      "all retries exhausted",
+			wantRateLimited: 2,
+			wantHardFail:    1,
+		},
+		{
+			name:    "403 with Retry-After header retries then fails",
+			record:  testRecord(),
+			retries: 1,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"rate limit"}`))
+			},
+			wantErr:         true,
+			errContain:      "all retries exhausted",
+			wantRateLimited: 2,
+			wantHardFail:    1,
+		},
+		{
+			name:    "403 with x-ratelimit-remaining 0 retries then fails",
+			record:  testRecord(),
+			retries: 1,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Ratelimit-Remaining", "0")
+				w.WriteHeader(http.StatusForbidden)
+			},
+			wantErr:         true,
+			errContain:      "all retries exhausted",
+			wantRateLimited: 2,
+			wantHardFail:    1,
+		},
+		{
+			name:    "500 server error retries then fails",
+			record:  testRecord(),
+			retries: 1,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("internal error"))
+			},
+			wantErr:      true,
+			errContain:   "all retries exhausted",
+			wantSoftFail: 2,
+			wantHardFail: 1,
+		},
+		{
+			name:    "500 then 200 succeeds on retry",
+			record:  testRecord(),
+			retries: 2,
+			handler: func() http.HandlerFunc {
+				var count atomic.Int32
+				return func(w http.ResponseWriter, r *http.Request) {
+					if count.Add(1) == 1 {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}
+			}(),
+			wantSoftFail: 1,
+			wantOk:       1,
+		},
+		{
+			name:    "429 then 200 succeeds on retry",
+			record:  testRecord(),
+			retries: 2,
+			handler: func() http.HandlerFunc {
+				var count atomic.Int32
+				return func(w http.ResponseWriter, r *http.Request) {
+					if count.Add(1) == 1 {
+						w.Header().Set("Retry-After", "0")
+						w.WriteHeader(http.StatusTooManyRequests)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}
+			}(),
+			wantRateLimited: 1,
+			wantOk:          1,
+		},
+		{
+			name:    "403 secondary rate limit then 200 succeeds on retry",
+			record:  testRecord(),
+			retries: 2,
+			handler: func() http.HandlerFunc {
+				var count atomic.Int32
+				return func(w http.ResponseWriter, r *http.Request) {
+					if count.Add(1) == 1 {
+						w.Header().Set("Retry-After", "0")
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}
+			}(),
+			wantRateLimited: 1,
+			wantOk:          1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.handler)
+			t.Cleanup(srv.Close)
+
+			client, err := NewClient(srv.URL, "test-org", WithRetries(tt.retries))
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+
+			// Snapshot all counters before the call
+			counters := allCounters()
+			snapshots := make([]float64, len(counters))
+			for i, c := range counters {
+				snapshots[i] = testutil.ToFloat64(c)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			err = client.PostOne(ctx, tt.record)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errType != nil {
+					target := tt.errType
+					switch target.(type) {
+					case *NoArtifactError:
+						var e *NoArtifactError
+						if !errors.As(err, &e) {
+							t.Errorf("expected NoArtifactError, got %T: %v", err, err)
+						}
+					case *ClientError:
+						var e *ClientError
+						if !errors.As(err, &e) {
+							t.Errorf("expected ClientError, got %T: %v", err, err)
+						}
+					}
+				}
+				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContain)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Assert all metric deltas
+			wantDeltas := []float64{
+				tt.wantOk,
+				tt.wantNoAttestation,
+				tt.wantRateLimited,
+				tt.wantSoftFail,
+				tt.wantHardFail,
+				tt.wantClientError,
+			}
+			names := []string{
+				"PostDeploymentRecordOk",
+				"PostDeploymentRecordNoAttestation",
+				"PostDeploymentRecordRateLimited",
+				"PostDeploymentRecordSoftFail",
+				"PostDeploymentRecordHardFail",
+				"PostDeploymentRecordClientError",
+			}
+			for i, c := range counters {
+				got := testutil.ToFloat64(c) - snapshots[i]
+				if got != wantDeltas[i] {
+					t.Errorf("%s delta = %v, want %v", names[i], got, wantDeltas[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPostOneSendsCorrectRequest(t *testing.T) {
+	record := testRecord()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if got := r.URL.Path; got != "/orgs/test-org/artifacts/metadata/deployment-record" {
+			t.Errorf("path = %s, want /orgs/test-org/artifacts/metadata/deployment-record", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %s, want application/json", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("Authorization = %s, want Bearer test-token", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org",
+		WithAPIToken("test-token"))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	if err := client.PostOne(context.Background(), record); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

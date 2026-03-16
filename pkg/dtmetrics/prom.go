@@ -50,10 +50,18 @@ var (
 	)
 
 	//nolint: revive
-	PostDeploymentRecordNotSaved = promauto.NewCounter(
+	PostDeploymentRecordNoAttestation = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "deptracker_post_record_not_saved",
-			Help: "The total number of successful posts with no attestation that result in no record creation",
+			Name: "deptracker_post_record_no_attestation",
+			Help: "The total number of successful posts for container digest with no matching attestation for the org",
+		},
+	)
+
+	//nolint: revive
+	PostDeploymentRecordRateLimited = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_rate_limited",
+			Help: "The total number of post failures due to rate limits",
 		},
 	)
 

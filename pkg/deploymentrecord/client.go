@@ -166,7 +166,10 @@ type NoArtifactError struct {
 }
 
 func (n *NoArtifactError) Error() string {
-	return fmt.Sprintf("client_error: %s", n.err.Error())
+	if n.err == nil {
+		return "no artifact found"
+	}
+	return fmt.Sprintf("no artifact found: %s", n.err.Error())
 }
 
 func (n *NoArtifactError) Unwrap() error {
@@ -262,35 +265,39 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		}
 
 		// Drain and close response body to enable connection reuse by reading body for error logging
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 
 		switch {
-		case resp.StatusCode == 429:
-			// Retry with backoff
-			dtmetrics.PostDeploymentRecordSoftFail.Inc()
-			slog.Debug("rate limited, retrying",
-				"attempt", attempt,
-				"status_code", resp.StatusCode,
-			)
-			lastErr = fmt.Errorf("rate limited, attempt %d", attempt)
-			continue
-		case resp.StatusCode == 404:
+		case resp.StatusCode == 404 && bytes.Contains(respBody, []byte("no artifacts found")):
 			// No artifact found
-			dtmetrics.PostDeploymentRecordNotSaved.Inc()
+			dtmetrics.PostDeploymentRecordNoAttestation.Inc()
 			slog.Debug("no artifact attestation found, no record created",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
 			)
-			return &NoArtifactError{err: fmt.Errorf("no artifact found")}
+			return &NoArtifactError{}
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
+			if resp.Header.Get("retry-after") != "" || resp.Header.Get("x-ratelimit-remaining") == "0" {
+				// rate limited — retry with backoff
+				// Could be 403 or 429
+				dtmetrics.PostDeploymentRecordRateLimited.Inc()
+				slog.Warn("rate limited, retrying",
+					"attempt", attempt,
+					"status_code", resp.StatusCode,
+					"retry_after", resp.Header.Get("Retry-After"),
+					"resp_msg", string(respBody),
+				)
+				lastErr = fmt.Errorf("rate limited, attempt %d", attempt)
+				continue
+			}
 			// Don't retry non rate limiting client errors
 			dtmetrics.PostDeploymentRecordClientError.Inc()
 			slog.Warn("client error, aborting",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
-				"resp_msg", string(body),
+				"resp_msg", string(respBody),
 			)
 			return &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
 		default:
@@ -299,7 +306,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			slog.Debug("retriable error",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
-				"resp_msg", string(body),
+				"resp_msg", string(respBody),
 			)
 			lastErr = fmt.Errorf("server error, attempt %d", attempt)
 		}
