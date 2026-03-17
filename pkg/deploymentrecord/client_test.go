@@ -356,17 +356,6 @@ func TestPostOne(t *testing.T) {
 			wantNoAttestation: 1,
 		},
 		{
-			name:   "404 without no artifacts found returns ClientError",
-			record: testRecord(),
-			handler: func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"message":"not found"}`))
-			},
-			wantErr:         true,
-			errType:         &ClientError{},
-			wantClientError: 1,
-		},
-		{
 			name:   "400 returns ClientError",
 			record: testRecord(),
 			handler: func(w http.ResponseWriter, _ *http.Request) {
@@ -383,6 +372,17 @@ func TestPostOne(t *testing.T) {
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"message":"forbidden"}`))
+			},
+			wantErr:         true,
+			errType:         &ClientError{},
+			wantClientError: 1,
+		},
+		{
+			name:   "422 invalid body returns ClientError",
+			record: testRecord(),
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte("invalid body"))
 			},
 			wantErr:         true,
 			errType:         &ClientError{},

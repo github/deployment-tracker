@@ -267,7 +267,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		_ = resp.Body.Close()
 
 		switch {
-		case resp.StatusCode == 404 && bytes.Contains(respBody, []byte("no artifacts found")):
+		case resp.StatusCode == 404:
 			// No artifact found
 			dtmetrics.PostDeploymentRecordNoAttestation.Inc()
 			slog.Debug("no artifact attestation found, no record created",
@@ -279,7 +279,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			return &NoArtifactError{err: fmt.Errorf("no attestation found for %s", record.Digest)}
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
 			if resp.Header.Get("retry-after") != "" || resp.Header.Get("x-ratelimit-remaining") == "0" {
-				// rate limited — retry with backoff
+				// Rate limited — retry with backoff
 				// Could be 403 or 429
 				dtmetrics.PostDeploymentRecordRateLimited.Inc()
 				slog.Warn("rate limited, retrying",
