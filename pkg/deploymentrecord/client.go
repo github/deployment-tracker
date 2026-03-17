@@ -274,6 +274,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
 				"container_name", record.Name,
+				"resp_msg", string(respBody),
 				"digest", record.Digest,
 			)
 			return &NoArtifactError{err: fmt.Errorf("no attestation found for %s", record.Digest)}
