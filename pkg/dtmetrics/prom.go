@@ -50,6 +50,22 @@ var (
 	)
 
 	//nolint: revive
+	PostDeploymentRecordNoAttestation = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_no_attestation",
+			Help: "The total number of post attempts that resulted in no matching attestation for the container digest (404 'no artifacts found' responses)",
+		},
+	)
+
+	//nolint: revive
+	PostDeploymentRecordRateLimited = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_rate_limited",
+			Help: "The total number of post attempts that were rate limited",
+		},
+	)
+
+	//nolint: revive
 	PostDeploymentRecordSoftFail = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "deptracker_post_record_soft_fail",
