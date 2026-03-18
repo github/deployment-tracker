@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -421,6 +423,7 @@ func TestPostOne(t *testing.T) {
 			retries: 1,
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("X-Ratelimit-Remaining", "0")
+				w.Header().Set("X-Ratelimit-Reset", strconv.FormatInt(time.Now().Add(1*time.Second).Unix(), 10))
 				w.WriteHeader(http.StatusForbidden)
 			},
 			wantErr:         true,
@@ -602,5 +605,119 @@ func TestPostOneSendsCorrectRequest(t *testing.T) {
 
 	if err := client.PostOne(context.Background(), record); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseRateLimitDelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers http.Header
+		wantMin time.Duration
+		wantMax time.Duration
+	}{
+		{
+			name:    "Retry-After in seconds",
+			headers: http.Header{"Retry-After": []string{"5"}},
+			wantMin: 5 * time.Second,
+			wantMax: 5 * time.Second,
+		},
+		{
+			name:    "Retry-After zero seconds",
+			headers: http.Header{"Retry-After": []string{"0"}},
+			wantMin: 0,
+			wantMax: 0,
+		},
+		{
+			name: "X-Ratelimit-Remaining 0 with reset",
+			headers: http.Header{
+				"X-Ratelimit-Remaining": []string{"0"},
+				"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(10*time.Second).Unix(), 10)},
+			},
+			wantMin: 9 * time.Second,
+			wantMax: 11 * time.Second,
+		},
+		{
+			name:    "no relevant headers defaults to 1 minute",
+			headers: http.Header{},
+			wantMin: time.Minute,
+			wantMax: time.Minute,
+		},
+		{
+			name: "Largest delay takes precedence",
+			headers: http.Header{
+				"Retry-After":           []string{"3"},
+				"X-Ratelimit-Remaining": []string{"0"},
+				"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(60*time.Second).Unix(), 10)},
+			},
+			wantMin: 59 * time.Second,
+			wantMax: 61 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{Header: tt.headers}
+			result := parseRateLimitDelay(resp)
+			if result < tt.wantMin || result > tt.wantMax {
+				t.Errorf("parseRateLimitDelay() = %v, want between %v and %v", result, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
+	var reqCount atomic.Int32
+	firstReqDone := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := reqCount.Add(1)
+		if count == 1 {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusTooManyRequests)
+			close(firstReqDone)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(2))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	var wg sync.WaitGroup
+
+	// Goroutine 1: triggers the rate limit
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := client.PostOne(ctx, testRecord()); err != nil {
+			t.Errorf("goroutine 1 error: %v", err)
+		}
+	}()
+
+	// Wait for the rate limit to be received and backoff set
+	<-firstReqDone
+	time.Sleep(50 * time.Millisecond)
+
+	// Goroutine 2: must observe the shared backoff
+	start := time.Now()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := client.PostOne(ctx, testRecord()); err != nil {
+			t.Errorf("goroutine 2 error: %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	elapsed := time.Since(start)
+	if elapsed < 1800*time.Millisecond {
+		t.Errorf("goroutine 2 should have waited for retry-after, but only waited %v", elapsed)
 	}
 }

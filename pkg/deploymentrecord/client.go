@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
@@ -37,6 +38,10 @@ type Client struct {
 	apiToken    string
 	transport   *ghinstallation.Transport
 	rateLimiter *rate.Limiter
+
+	// rateLimitDelay is shared across workers
+	rateLimitDelayMu sync.Mutex
+	rateLimitDelay   time.Time
 }
 
 // NewClient creates a new API client with the given base URL and
@@ -197,23 +202,12 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	var lastErr error
 	// The first attempt is not a retry!
 	for attempt := range c.retries + 1 {
-		if attempt > 0 {
-			backoff := time.Duration(math.Pow(2,
-				float64(attempt))) * 100 * time.Millisecond
-			//nolint:gosec
-			jitter := time.Duration(rand.Int64N(50)) * time.Millisecond
-			delay := backoff + jitter
+		if err = waitForBackoff(ctx, attempt); err != nil {
+			return err
+		}
 
-			if delay > 5*time.Second {
-				delay = 5 * time.Second
-			}
-
-			// Wait with context cancellation support
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
-			}
+		if err = c.waitForSecondaryRateLimit(ctx); err != nil {
+			return err
 		}
 
 		// Reset reader position for retries
@@ -268,7 +262,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 		switch {
 		case resp.StatusCode == 404:
-			// No artifact found
+			// No artifact found - do not retry
 			dtmetrics.PostDeploymentRecordNoAttestation.Inc()
 			slog.Debug("no artifact attestation found, no record created",
 				"attempt", attempt,
@@ -279,14 +273,15 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			)
 			return &NoArtifactError{err: fmt.Errorf("no attestation found for %s", record.Digest)}
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
-			if resp.Header.Get("retry-after") != "" || resp.Header.Get("x-ratelimit-remaining") == "0" {
-				// Rate limited — retry with backoff
-				// Could be 403 or 429
+			// Check headers that indicate rate limiting
+			if resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-Ratelimit-Remaining") == "0" {
+				retryDelay := parseRateLimitDelay(resp)
+				c.setRetryAfter(retryDelay)
 				dtmetrics.PostDeploymentRecordRateLimited.Inc()
 				slog.Warn("rate limited, retrying",
 					"attempt", attempt,
 					"status_code", resp.StatusCode,
-					"retry_after", resp.Header.Get("Retry-After"),
+					"retry_delay", retryDelay.Seconds(),
 					"container_name", record.Name,
 					"resp_msg", string(respBody),
 				)
@@ -322,4 +317,97 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		"container_name", record.Name,
 	)
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
+}
+
+// waitForSecondaryRateLimit blocks until the global secondary rate limit backoff has elapsed.
+// All workers sharing this client observe the same deadline.
+func (c *Client) waitForSecondaryRateLimit(ctx context.Context) error {
+	c.rateLimitDelayMu.Lock()
+	waitUntil := c.rateLimitDelay
+	c.rateLimitDelayMu.Unlock()
+
+	delay := time.Until(waitUntil)
+	if delay <= 0 {
+		return nil
+	}
+
+	slog.Info("waiting for secondary rate limit backoff",
+		"delay", delay.Round(time.Millisecond),
+	)
+
+	select {
+	case <-time.After(delay):
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled during secondary rate limit wait: %w", ctx.Err())
+	}
+}
+
+// setRetryAfter records a global backoff deadline.
+// Ensures deadline can only be extended, not shortened.
+func (c *Client) setRetryAfter(d time.Duration) {
+	until := time.Now().Add(d)
+	c.rateLimitDelayMu.Lock()
+	defer c.rateLimitDelayMu.Unlock()
+	if until.After(c.rateLimitDelay) {
+		c.rateLimitDelay = until
+	}
+}
+
+// parseRateLimitDelay extracts the backoff duration from a rate-limit response:
+// Return largest delay from header options.
+// If no headers are set, default to 1 minute.
+func parseRateLimitDelay(resp *http.Response) time.Duration {
+	// GitHub docs show Retry-After header will always be an int
+	var replyAfterDelay *time.Duration
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if seconds, err := strconv.Atoi(ra); err == nil {
+			rad := time.Duration(seconds) * time.Second
+			replyAfterDelay = &rad
+		}
+	}
+
+	var rateLimitResetDelay *time.Duration
+	if resp.Header.Get("X-Ratelimit-Remaining") == "0" {
+		if resetStr := resp.Header.Get("X-Ratelimit-Reset"); resetStr != "" {
+			if epoch, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
+				if d := time.Until(time.Unix(epoch, 0)); d > 0 {
+					rateLimitResetDelay = &d
+				}
+			}
+		}
+	}
+
+	switch {
+	case replyAfterDelay != nil && rateLimitResetDelay != nil:
+		return max(*replyAfterDelay, *rateLimitResetDelay)
+	case replyAfterDelay != nil:
+		return *replyAfterDelay
+	case rateLimitResetDelay != nil:
+		return *rateLimitResetDelay
+	default:
+		return time.Minute
+	}
+}
+
+func waitForBackoff(ctx context.Context, attempt int) error {
+	if attempt > 0 {
+		backoff := time.Duration(math.Pow(2,
+			float64(attempt))) * 100 * time.Millisecond
+		//nolint:gosec
+		jitter := time.Duration(rand.Int64N(50)) * time.Millisecond
+		delay := backoff + jitter
+
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+
+		// Wait with context cancellation support
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
+		}
+	}
+	return nil
 }
