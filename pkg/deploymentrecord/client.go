@@ -359,11 +359,11 @@ func (c *Client) setRetryAfter(d time.Duration) {
 // If no headers are set, default to 1 minute.
 func parseRateLimitDelay(resp *http.Response) time.Duration {
 	// GitHub docs show Retry-After header will always be an int
-	var replyAfterDelay *time.Duration
+	var retryAfterDelay *time.Duration
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if seconds, err := strconv.Atoi(ra); err == nil {
 			rad := time.Duration(seconds) * time.Second
-			replyAfterDelay = &rad
+			retryAfterDelay = &rad
 		}
 	}
 
@@ -379,10 +379,10 @@ func parseRateLimitDelay(resp *http.Response) time.Duration {
 	}
 
 	switch {
-	case replyAfterDelay != nil && rateLimitResetDelay != nil:
-		return max(*replyAfterDelay, *rateLimitResetDelay)
-	case replyAfterDelay != nil:
-		return *replyAfterDelay
+	case retryAfterDelay != nil && rateLimitResetDelay != nil:
+		return max(*retryAfterDelay, *rateLimitResetDelay)
+	case retryAfterDelay != nil:
+		return *retryAfterDelay
 	case rateLimitResetDelay != nil:
 		return *rateLimitResetDelay
 	default:
