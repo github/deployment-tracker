@@ -692,13 +692,11 @@ func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Goroutine 1: triggers the rate limit
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := client.PostOne(ctx, testRecord()); err != nil {
 			t.Errorf("goroutine 1 error: %v", err)
 		}
-	}()
+	})
 
 	// Wait for the rate limit to be received and backoff set
 	<-firstReqDone
@@ -706,13 +704,11 @@ func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
 
 	// Goroutine 2: must observe the shared backoff
 	start := time.Now()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := client.PostOne(ctx, testRecord()); err != nil {
 			t.Errorf("goroutine 2 error: %v", err)
 		}
-	}()
+	})
 
 	wg.Wait()
 

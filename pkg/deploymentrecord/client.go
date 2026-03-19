@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
@@ -39,9 +39,8 @@ type Client struct {
 	transport        *ghinstallation.Transport
 	requestThrottler *rate.Limiter
 
-	// rateLimitDelay is shared across workers
-	rateLimitDelayMu sync.Mutex
-	rateLimitDelay   time.Time
+	// rateLimitDeadline is a UnixNano timestamp shared across workers.
+	rateLimitDeadline atomic.Int64
 }
 
 // NewClient creates a new API client with the given base URL and
@@ -282,6 +281,8 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 				slog.Warn("rate limited, retrying",
 					"attempt", attempt,
 					"status_code", resp.StatusCode,
+					"retry-after", resp.Header.Get("Retry-After"),
+					"x-ratelimit-remaining", resp.Header.Get("X-Ratelimit-Remaining"),
 					"retry_delay", retryDelay.Seconds(),
 					"container_name", record.Name,
 					"resp_msg", string(respBody),
@@ -320,14 +321,11 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
 }
 
-// waitForServerRateLimit blocks until the global secondary rate limit backoff has elapsed.
+// waitForServerRateLimit blocks until the global server rate limit backoff has elapsed.
 // All workers sharing this client observe the same deadline.
 func (c *Client) waitForServerRateLimit(ctx context.Context) error {
-	c.rateLimitDelayMu.Lock()
-	waitUntil := c.rateLimitDelay
-	c.rateLimitDelayMu.Unlock()
-
-	delay := time.Until(waitUntil)
+	deadline := c.rateLimitDeadline.Load()
+	delay := time.Until(time.Unix(0, deadline))
 	if delay <= 0 {
 		return nil
 	}
@@ -347,11 +345,15 @@ func (c *Client) waitForServerRateLimit(ctx context.Context) error {
 // setRetryAfter records a global backoff deadline.
 // Ensures deadline can only be extended, not shortened.
 func (c *Client) setRetryAfter(d time.Duration) {
-	until := time.Now().Add(d)
-	c.rateLimitDelayMu.Lock()
-	defer c.rateLimitDelayMu.Unlock()
-	if until.After(c.rateLimitDelay) {
-		c.rateLimitDelay = until
+	newDeadline := time.Now().Add(d).UnixNano()
+	for {
+		current := c.rateLimitDeadline.Load()
+		if newDeadline <= current {
+			return
+		}
+		if c.rateLimitDeadline.CompareAndSwap(current, newDeadline) {
+			return
+		}
 	}
 }
 
