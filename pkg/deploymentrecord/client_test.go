@@ -703,17 +703,19 @@ func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Goroutine 2: must observe the shared backoff
+	secondReqDone := make(chan struct{})
 	start := time.Now()
 	wg.Go(func() {
+		defer close(secondReqDone)
 		if err := client.PostOne(ctx, testRecord()); err != nil {
 			t.Errorf("goroutine 2 error: %v", err)
 		}
 	})
-
-	wg.Wait()
-
+	// Measure only goroutine 2's duration
+	<-secondReqDone
 	elapsed := time.Since(start)
 	if elapsed < 1500*time.Millisecond {
 		t.Errorf("goroutine 2 should have waited for retry-after, but only waited %v", elapsed)
 	}
+	wg.Wait()
 }

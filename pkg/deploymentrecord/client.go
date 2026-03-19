@@ -184,11 +184,6 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		return errors.New("record cannot be nil")
 	}
 
-	// Wait for request throttler
-	if err := c.requestThrottler.Wait(ctx); err != nil {
-		return fmt.Errorf("request throttler wait failed: %w", err)
-	}
-
 	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
 
 	body, err := json.Marshal(record)
@@ -207,6 +202,10 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 		if err = c.waitForServerRateLimit(ctx); err != nil {
 			return err
+		}
+
+		if err = c.requestThrottler.Wait(ctx); err != nil {
+			return fmt.Errorf("request throttler wait failed: %w", err)
 		}
 
 		// Reset reader position for retries
@@ -334,8 +333,11 @@ func (c *Client) waitForServerRateLimit(ctx context.Context) error {
 		"delay", delay.Round(time.Millisecond),
 	)
 
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(delay):
+	case <-timer.C:
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled during server rate limit wait: %w", ctx.Err())
@@ -408,8 +410,11 @@ func waitForBackoff(ctx context.Context, attempt int) error {
 		}
 
 		// Wait with context cancellation support
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 		case <-ctx.Done():
 			return fmt.Errorf("context cancelled during retry backoff: %w", ctx.Err())
 		}
