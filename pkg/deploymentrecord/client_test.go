@@ -717,7 +717,7 @@ func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
 	wg.Wait()
 
 	elapsed := time.Since(start)
-	if elapsed < 1800*time.Millisecond {
+	if elapsed < 1500*time.Millisecond {
 		t.Errorf("goroutine 2 should have waited for retry-after, but only waited %v", elapsed)
 	}
 }

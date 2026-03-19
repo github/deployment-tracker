@@ -31,13 +31,13 @@ var validOrgPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Client is an API client for posting deployment records.
 type Client struct {
-	baseURL     string
-	org         string
-	httpClient  *http.Client
-	retries     int
-	apiToken    string
-	transport   *ghinstallation.Transport
-	rateLimiter *rate.Limiter
+	baseURL          string
+	org              string
+	httpClient       *http.Client
+	retries          int
+	apiToken         string
+	transport        *ghinstallation.Transport
+	requestThrottler *rate.Limiter
 
 	// rateLimitDelay is shared across workers
 	rateLimitDelayMu sync.Mutex
@@ -75,8 +75,8 @@ func NewClient(baseURL, org string, opts ...ClientOption) (*Client, error) {
 			Timeout: 5 * time.Second,
 		},
 		retries: 3,
-		// 20 req/sec with burst of 50
-		rateLimiter: rate.NewLimiter(rate.Limit(20), 50),
+		// 3 req/sec (180 req/min) with burst of 20
+		requestThrottler: rate.NewLimiter(rate.Limit(3), 20),
 	}
 
 	for _, opt := range opts {
@@ -145,10 +145,10 @@ func WithGHApp(id, installID string, pkBytes []byte, pkPath string) ClientOption
 	}
 }
 
-// WithRateLimiter sets a custom rate limiter for API calls.
-func WithRateLimiter(rps float64, burst int) ClientOption {
+// WithRequestThrottler sets a custom rate limiter for API calls.
+func WithRequestThrottler(rps float64, burst int) ClientOption {
 	return func(c *Client) {
-		c.rateLimiter = rate.NewLimiter(rate.Limit(rps), burst)
+		c.requestThrottler = rate.NewLimiter(rate.Limit(rps), burst)
 	}
 }
 
@@ -185,9 +185,9 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		return errors.New("record cannot be nil")
 	}
 
-	// Wait for rate limiter
-	if err := c.rateLimiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limiter wait failed: %w", err)
+	// Wait for request throttler
+	if err := c.requestThrottler.Wait(ctx); err != nil {
+		return fmt.Errorf("request throttler wait failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
@@ -206,7 +206,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 			return err
 		}
 
-		if err = c.waitForSecondaryRateLimit(ctx); err != nil {
+		if err = c.waitForServerRateLimit(ctx); err != nil {
 			return err
 		}
 
@@ -320,9 +320,9 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 	return fmt.Errorf("all retries exhausted: %w", lastErr)
 }
 
-// waitForSecondaryRateLimit blocks until the global secondary rate limit backoff has elapsed.
+// waitForServerRateLimit blocks until the global secondary rate limit backoff has elapsed.
 // All workers sharing this client observe the same deadline.
-func (c *Client) waitForSecondaryRateLimit(ctx context.Context) error {
+func (c *Client) waitForServerRateLimit(ctx context.Context) error {
 	c.rateLimitDelayMu.Lock()
 	waitUntil := c.rateLimitDelay
 	c.rateLimitDelayMu.Unlock()
@@ -332,7 +332,7 @@ func (c *Client) waitForSecondaryRateLimit(ctx context.Context) error {
 		return nil
 	}
 
-	slog.Info("waiting for secondary rate limit backoff",
+	slog.Info("waiting for server rate limit backoff",
 		"delay", delay.Round(time.Millisecond),
 	)
 
@@ -340,7 +340,7 @@ func (c *Client) waitForSecondaryRateLimit(ctx context.Context) error {
 	case <-time.After(delay):
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("context cancelled during secondary rate limit wait: %w", ctx.Err())
+		return fmt.Errorf("context cancelled during server rate limit wait: %w", ctx.Err())
 	}
 }
 
@@ -363,6 +363,8 @@ func parseRateLimitDelay(resp *http.Response) time.Duration {
 	var retryAfterDelay *time.Duration
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if seconds, err := strconv.Atoi(ra); err == nil {
+			// Max Retry-After of 60 seconds
+			seconds = min(seconds, 60)
 			rad := time.Duration(seconds) * time.Second
 			retryAfterDelay = &rad
 		}
