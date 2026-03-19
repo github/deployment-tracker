@@ -230,6 +230,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		} else if c.apiToken != "" {
 			req.Header.Set("Authorization", "Bearer "+c.apiToken)
 		}
+		req.Header.Set("User-Agent", "GitHub-Deployment-Tracker")
 
 		start := time.Now()
 		// nolint: gosec
