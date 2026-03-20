@@ -42,9 +42,9 @@ cluster:
 	@echo "Creating kind cluster: ${CLUSTER}"
 	kind create cluster --name ${CLUSTER}
 	@echo "Creating namespaces..."
-	kubectl create namespace test1
-	kubectl create namespace test2
-	kubectl create namespace test3
+	kubectl create namespace test1 --dry-run=client -o yaml | kubectl apply -f -
+	kubectl create namespace test2 --dry-run=client -o yaml | kubectl apply -f -
+	kubectl create namespace test3 --dry-run=client -o yaml | kubectl apply -f -
 	@echo "Kind cluster '${CLUSTER}' created with namespaces: test1, test2, test3"
 
 .PHONY: cluster-delete
@@ -57,8 +57,8 @@ cluster-delete:
 echo:
 	@echo "Deploying echo server to artifact-registry namespace..."
 	kubectl create namespace artifact-registry --dry-run=client -o yaml | kubectl apply -f -
-	kubectl run artifact-registry --image=ealen/echo-server:latest --port=80 -n artifact-registry --restart=Always --labels="app=artifact-registry" || true
-	kubectl expose pod artifact-registry --port=9090 --target-port=80 --name=artifact-registry -n artifact-registry --type=ClusterIP || true
+	kubectl run artifact-registry --image=ealen/echo-server:latest --port=80 -n artifact-registry --restart=Always --labels="app=artifact-registry"
+	kubectl expose pod artifact-registry --port=9090 --target-port=80 --name=artifact-registry -n artifact-registry --type=ClusterIP
 	@echo "Echo server deployed and reachable at http://artifact-registry.artifact-registry.svc.cluster.local:9090"
 
 .PHONY: echo-delete
