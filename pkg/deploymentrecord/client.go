@@ -367,8 +367,6 @@ func parseRateLimitDelay(resp *http.Response) time.Duration {
 	var retryAfterDelay *time.Duration
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if seconds, err := strconv.Atoi(ra); err == nil {
-			// Max Retry-After of 60 seconds
-			seconds = min(seconds, 60)
 			rad := time.Duration(seconds) * time.Second
 			retryAfterDelay = &rad
 		}
