@@ -55,6 +55,6 @@ Create the name of the service account to use.
 {{- if .Values.serviceAccount.create }}
 {{- default (include "deployment-tracker.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
-{{- default "default" .Values.serviceAccount.name }}
+{{- required "serviceAccount.name must be set when serviceAccount.create is false" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
