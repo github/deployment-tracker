@@ -88,4 +88,12 @@ var (
 			Help: "The total number of non-retryable client failures",
 		},
 	)
+
+	//nolint: revive
+	PostDeploymentRecordUnknownArtifactCacheHit = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "deptracker_post_record_unknown_artifact_cache_hit",
+			Help: "The total number of API calls avoided due to a cached 404 for an unknown artifact digest",
+		},
+	)
 )
