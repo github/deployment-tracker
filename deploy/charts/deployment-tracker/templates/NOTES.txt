@@ -1,0 +1,26 @@
+deployment-tracker has been installed.
+
+{{- if not .Values.config.org }}
+
+WARNING: config.org is not set. The controller requires a GitHub organization name.
+{{- end }}
+
+1. Check the deployment status:
+
+   kubectl get deployment {{ include "deployment-tracker.fullname" . }} -n {{ .Release.Namespace }}
+
+2. Check the controller pods:
+
+   kubectl get pods -n {{ .Release.Namespace }} -l "{{ include "deployment-tracker.selectorLabels" . | replace "\n" "," }}"
+
+3. View controller logs:
+
+   kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "deployment-tracker.name" . }}" -f
+
+{{- if .Values.service.enabled }}
+
+4. Access Prometheus metrics:
+
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "deployment-tracker.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   curl http://localhost:{{ .Values.service.port }}/metrics
+{{- end }}
