@@ -2,8 +2,8 @@ apiVersion: v2
 name: deployment-tracker
 description: A Kubernetes controller that monitors pod lifecycles and uploads deployment records to GitHub's artifact metadata API
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.0.0
+appVersion: "0.0.0"
 kubeVersion: ">= 1.19.0-0"
 keywords:
   - kubernetes
