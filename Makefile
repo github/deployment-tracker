@@ -45,7 +45,7 @@ cluster:
 	kubectl create namespace test1
 	kubectl create namespace test2
 	kubectl create namespace test3
-	@echo "Kind cluster '${CLUSTER}' created with namespaces: dev, staging, prod"
+	@echo "Kind cluster '${CLUSTER}' created with namespaces: test1, test2, test3"
 
 .PHONY: cluster-delete
 cluster-delete:
