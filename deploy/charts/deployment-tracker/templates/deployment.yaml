@@ -1,3 +1,6 @@
+{{- if and .Values.config.namespace .Values.config.excludeNamespaces }}
+{{- fail "config.namespace and config.excludeNamespaces are mutually exclusive and cannot both be set" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
