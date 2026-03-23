@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	appslisters "k8s.io/client-go/listers/apps/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -64,6 +65,8 @@ type Controller struct {
 	clientset          kubernetes.Interface
 	metadataAggregator podMetadataAggregator
 	podInformer        cache.SharedIndexInformer
+	deploymentInformer cache.SharedIndexInformer
+	deploymentLister   appslisters.DeploymentLister
 	workqueue          workqueue.TypedRateLimitingInterface[PodEvent]
 	apiClient          deploymentRecordPoster
 	cfg                *Config
@@ -82,6 +85,8 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 	factory := createInformerFactory(clientset, namespace, excludeNamespaces)
 
 	podInformer := factory.Core().V1().Pods().Informer()
+	deploymentInformer := factory.Apps().V1().Deployments().Informer()
+	deploymentLister := factory.Apps().V1().Deployments().Lister()
 
 	// Create work queue with rate limiting
 	queue := workqueue.NewTypedRateLimitingQueue(
@@ -117,6 +122,8 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		clientset:           clientset,
 		metadataAggregator:  metadataAggregator,
 		podInformer:         podInformer,
+		deploymentInformer:  deploymentInformer,
+		deploymentLister:    deploymentLister,
 		workqueue:           queue,
 		apiClient:           apiClient,
 		cfg:                 cfg,
@@ -237,14 +244,15 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	defer runtime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
-	slog.Info("Starting pod informer")
+	slog.Info("Starting informers")
 
-	// Start the informer
+	// Start the informers
 	go c.podInformer.Run(ctx.Done())
+	go c.deploymentInformer.Run(ctx.Done())
 
-	// Wait for the cache to be synced
-	slog.Info("Waiting for informer cache to sync")
-	if !cache.WaitForCacheSync(ctx.Done(), c.podInformer.HasSynced) {
+	// Wait for the caches to be synced
+	slog.Info("Waiting for informer caches to sync")
+	if !cache.WaitForCacheSync(ctx.Done(), c.podInformer.HasSynced, c.deploymentInformer.HasSynced) {
 		return errors.New("timed out waiting for caches to sync")
 	}
 
@@ -327,7 +335,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		// the referenced image digest to the newly observed (via
 		// the create event).
 		deploymentName := getDeploymentName(pod)
-		if deploymentName != "" && c.deploymentExists(ctx, pod.Namespace, deploymentName) {
+		if deploymentName != "" && c.deploymentExists(pod.Namespace, deploymentName) {
 			slog.Debug("Deployment still exists, skipping pod delete (scale down)",
 				"namespace", pod.Namespace,
 				"deployment", deploymentName,
@@ -390,16 +398,14 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	return lastErr
 }
 
-// deploymentExists checks if a deployment exists in the cluster.
-func (c *Controller) deploymentExists(ctx context.Context, namespace, name string) bool {
-	_, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+// deploymentExists checks if a deployment exists in the local informer cache.
+func (c *Controller) deploymentExists(namespace, name string) bool {
+	_, err := c.deploymentLister.Deployments(namespace).Get(name)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return false
 		}
-		// On error, assume it exists to be safe
-		// (avoid false decommissions)
-		slog.Warn("Failed to check if deployment exists, assuming it does",
+		slog.Warn("Failed to check if deployment exists in cache, assuming it does",
 			"namespace", namespace,
 			"deployment", name,
 			"error", err,

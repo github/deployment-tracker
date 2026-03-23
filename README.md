@@ -110,7 +110,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods; `get` on other supported objects)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods and deployments; `get` on other supported objects)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
@@ -140,6 +140,8 @@ The controller requires the following minimum permissions:
 | API Group | Resource | Verbs |
 |-----------|----------|-------|
 | `""` (core) | `pods` | `get`, `list`, `watch` |
+| `apps` | `deployments` | `get`, `list`, `watch` |
+| `apps` | `replicasets` | `get` |
 
 If you only need to monitor a single namespace, you can modify the manifest to use a `Role` and `RoleBinding` instead of `ClusterRole` and `ClusterRoleBinding` for more restricted permissions.
 

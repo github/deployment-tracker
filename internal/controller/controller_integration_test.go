@@ -119,7 +119,7 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 	go func() {
 		_ = ctrl.Run(ctx, 1)
 	}()
-	if !cache.WaitForCacheSync(ctx.Done(), ctrl.podInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), ctrl.podInformer.HasSynced, ctrl.deploymentInformer.HasSynced) {
 		t.Fatal("timed out waiting for informer cache to sync")
 	}
 
