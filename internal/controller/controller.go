@@ -5,22 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/github/deployment-tracker/internal/metadata"
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
-	"github.com/github/deployment-tracker/pkg/dtmetrics"
-	"github.com/github/deployment-tracker/pkg/ociutil"
 	amcache "k8s.io/apimachinery/pkg/util/cache"
 
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	"k8s.io/client-go/tools/cache"
@@ -81,20 +74,36 @@ type Controller struct {
 
 // New creates a new deployment tracker controller.
 func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregator, namespace string, excludeNamespaces string, cfg *Config) (*Controller, error) {
-	// Create informer factory
 	factory := createInformerFactory(clientset, namespace, excludeNamespaces)
 
-	podInformer := factory.Core().V1().Pods().Informer()
-	deploymentInformer := factory.Apps().V1().Deployments().Informer()
-	deploymentLister := factory.Apps().V1().Deployments().Lister()
+	apiClient, err := newAPIClient(cfg)
+	if err != nil {
+		return nil, err
+	}
 
-	// Create work queue with rate limiting
-	queue := workqueue.NewTypedRateLimitingQueue(
-		workqueue.DefaultTypedControllerRateLimiter[PodEvent](),
-	)
+	cntrl := &Controller{
+		clientset:           clientset,
+		metadataAggregator:  metadataAggregator,
+		podInformer:         factory.Core().V1().Pods().Informer(),
+		deploymentInformer:  factory.Apps().V1().Deployments().Informer(),
+		deploymentLister:    factory.Apps().V1().Deployments().Lister(),
+		workqueue:           workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[PodEvent]()),
+		apiClient:           apiClient,
+		cfg:                 cfg,
+		observedDeployments: amcache.NewExpiring(),
+		unknownArtifacts:    amcache.NewExpiring(),
+	}
 
-	// Create API client with optional token
-	clientOpts := []deploymentrecord.ClientOption{}
+	if err := cntrl.registerEventHandlers(); err != nil {
+		return nil, err
+	}
+
+	return cntrl, nil
+}
+
+// newAPIClient creates a deployment record API client from the controller config.
+func newAPIClient(cfg *Config) (deploymentRecordPoster, error) {
+	var clientOpts []deploymentrecord.ClientOption
 	if cfg.APIToken != "" {
 		clientOpts = append(clientOpts, deploymentrecord.WithAPIToken(cfg.APIToken))
 	}
@@ -109,7 +118,7 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		))
 	}
 
-	apiClient, err := deploymentrecord.NewClient(
+	client, err := deploymentrecord.NewClient(
 		cfg.BaseURL,
 		cfg.Organization,
 		clientOpts...,
@@ -117,126 +126,7 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 	if err != nil {
 		return nil, fmt.Errorf("failed to create API client: %w", err)
 	}
-
-	cntrl := &Controller{
-		clientset:           clientset,
-		metadataAggregator:  metadataAggregator,
-		podInformer:         podInformer,
-		deploymentInformer:  deploymentInformer,
-		deploymentLister:    deploymentLister,
-		workqueue:           queue,
-		apiClient:           apiClient,
-		cfg:                 cfg,
-		observedDeployments: amcache.NewExpiring(),
-		unknownArtifacts:    amcache.NewExpiring(),
-	}
-
-	// Add event handlers to the informer
-	_, err = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			pod, ok := obj.(*corev1.Pod)
-			if !ok {
-				slog.Error("Invalid object returned",
-					"object", obj,
-				)
-				return
-			}
-
-			// Only process pods that are running and belong
-			// to a deployment
-			if pod.Status.Phase == corev1.PodRunning && getDeploymentName(pod) != "" {
-				key, err := cache.MetaNamespaceKeyFunc(obj)
-
-				// For our purposes, there are in practice
-				// no error event we care about, so don't
-				// bother with handling it.
-				if err == nil {
-					queue.Add(PodEvent{
-						Key:       key,
-						EventType: EventCreated,
-					})
-				}
-			}
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			oldPod, ok := oldObj.(*corev1.Pod)
-			if !ok {
-				slog.Error("Invalid old object returned",
-					"object", oldObj,
-				)
-				return
-			}
-			newPod, ok := newObj.(*corev1.Pod)
-			if !ok {
-				slog.Error("Invalid new object returned",
-					"object", newObj,
-				)
-				return
-			}
-
-			// Skip if pod is being deleted or doesn't belong
-			// to a deployment
-			if newPod.DeletionTimestamp != nil || getDeploymentName(newPod) == "" {
-				return
-			}
-
-			// Only process if pod just became running.
-			// We need to process this as often when a container
-			// is created, the spec does not contain the digest
-			// so we need to wait for the status field to be
-			// populated from where we can get the digest.
-			if oldPod.Status.Phase != corev1.PodRunning &&
-				newPod.Status.Phase == corev1.PodRunning {
-				key, err := cache.MetaNamespaceKeyFunc(newObj)
-
-				// For our purposes, there are in practice
-				// no error event we care about, so don't
-				// bother with handling it.
-				if err == nil {
-					queue.Add(PodEvent{
-						Key:       key,
-						EventType: EventCreated,
-					})
-				}
-			}
-		},
-		DeleteFunc: func(obj any) {
-			pod, ok := obj.(*corev1.Pod)
-			if !ok {
-				// Handle deleted final state unknown
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-				if !ok {
-					return
-				}
-				pod, ok = tombstone.Obj.(*corev1.Pod)
-				if !ok {
-					return
-				}
-			}
-
-			// Only process pods that belong to a deployment
-			if getDeploymentName(pod) == "" {
-				return
-			}
-
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			// For our purposes, there are in practice
-			// no error event we care about, so don't
-			// bother with handling it.
-			if err == nil {
-				queue.Add(PodEvent{
-					Key:        key,
-					EventType:  EventDeleted,
-					DeletedPod: pod,
-				})
-			}
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to add event handlers: %w", err)
-	}
-
-	return cntrl, nil
+	return client, nil
 }
 
 // Run starts the controller.
@@ -260,10 +150,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 		"count", workers,
 	)
 
-	// Start workers
-	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
-	}
+	c.startWorkers(ctx, workers)
 
 	slog.Info("Controller started")
 
@@ -271,412 +158,4 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	slog.Info("Shutting down workers")
 
 	return nil
-}
-
-// runWorker runs a worker to process items from the work queue.
-func (c *Controller) runWorker(ctx context.Context) {
-	for c.processNextItem(ctx) {
-	}
-}
-
-// processNextItem processes the next item from the work queue.
-func (c *Controller) processNextItem(ctx context.Context) bool {
-	event, shutdown := c.workqueue.Get()
-	if shutdown {
-		return false
-	}
-	defer c.workqueue.Done(event)
-
-	start := time.Now()
-	err := c.processEvent(ctx, event)
-	dur := time.Since(start)
-
-	if err == nil {
-		dtmetrics.EventsProcessedOk.WithLabelValues(event.EventType).Inc()
-		dtmetrics.EventsProcessedTimer.WithLabelValues("ok").Observe(dur.Seconds())
-
-		c.workqueue.Forget(event)
-		return true
-	}
-	dtmetrics.EventsProcessedTimer.WithLabelValues("failed").Observe(dur.Seconds())
-	dtmetrics.EventsProcessedFailed.WithLabelValues(event.EventType).Inc()
-
-	// Requeue on error with rate limiting
-	slog.Error("Failed to process event, requeuing",
-		"event_key", event.Key,
-		"error", err,
-	)
-	c.workqueue.AddRateLimited(event)
-
-	return true
-}
-
-// processEvent processes a single pod event.
-func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
-	var pod *corev1.Pod
-
-	if event.EventType == EventDeleted {
-		// For delete events, use the pod captured at deletion time
-		pod = event.DeletedPod
-		if pod == nil {
-			slog.Error("Delete event missing pod data",
-				"key", event.Key,
-			)
-			return nil
-		}
-
-		// Check if the parent deployment still exists
-		// If it does, this is just a scale-down event, skip it.
-		//
-		// If a deployment changes image versions, this will not
-		// fire delete/decommissioned events to the remote API.
-		// This is as intended, as the server will keep track of
-		// the (cluster unique) deployment name, and just update
-		// the referenced image digest to the newly observed (via
-		// the create event).
-		deploymentName := getDeploymentName(pod)
-		if deploymentName != "" && c.deploymentExists(pod.Namespace, deploymentName) {
-			slog.Debug("Deployment still exists, skipping pod delete (scale down)",
-				"namespace", pod.Namespace,
-				"deployment", deploymentName,
-				"pod", pod.Name,
-			)
-			return nil
-		}
-	} else {
-		// For create events, get the pod from the informer's cache
-		obj, exists, err := c.podInformer.GetIndexer().GetByKey(event.Key)
-		if err != nil {
-			slog.Error("Failed to get pod from cache",
-				"key", event.Key,
-				"error", err,
-			)
-			return nil
-		}
-		if !exists {
-			// Pod no longer exists in cache, skip processing
-			return nil
-		}
-
-		var ok bool
-		pod, ok = obj.(*corev1.Pod)
-		if !ok {
-			slog.Error("Invalid object type in cache",
-				"key", event.Key,
-			)
-			return nil
-		}
-	}
-
-	status := deploymentrecord.StatusDeployed
-	if event.EventType == EventDeleted {
-		status = deploymentrecord.StatusDecommissioned
-	}
-
-	var lastErr error
-
-	// Gather aggregate metadata for adds/updates
-	var aggPodMetadata *metadata.AggregatePodMetadata
-	if status != deploymentrecord.StatusDecommissioned {
-		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
-	}
-
-	// Record info for each container in the pod
-	for _, container := range pod.Spec.Containers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
-			lastErr = err
-		}
-	}
-
-	// Also record init containers
-	for _, container := range pod.Spec.InitContainers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
-			lastErr = err
-		}
-	}
-
-	return lastErr
-}
-
-// deploymentExists checks if a deployment exists in the local informer cache.
-func (c *Controller) deploymentExists(namespace, name string) bool {
-	_, err := c.deploymentLister.Deployments(namespace).Get(name)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return false
-		}
-		slog.Warn("Failed to check if deployment exists in cache, assuming it does",
-			"namespace", namespace,
-			"deployment", name,
-			"error", err,
-		)
-		return true
-	}
-	return true
-}
-
-// recordContainer records a single container's deployment info.
-func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, aggPodMetadata *metadata.AggregatePodMetadata) error {
-	var cacheKey string
-
-	dn := getARDeploymentName(pod, container, c.cfg.Template)
-	digest := getContainerDigest(pod, container.Name)
-
-	if dn == "" || digest == "" {
-		slog.Debug("Skipping container: missing deployment name or digest",
-			"namespace", pod.Namespace,
-			"pod", pod.Name,
-			"container", container.Name,
-			"deployment_name", dn,
-			"has_digest", digest != "",
-		)
-		return nil
-	}
-
-	// Check if we've already recorded this deployment
-	switch status {
-	case deploymentrecord.StatusDeployed:
-		cacheKey = getCacheKey(EventCreated, dn, digest)
-		if _, exists := c.observedDeployments.Get(cacheKey); exists {
-			slog.Debug("Deployment already observed, skipping post",
-				"deployment_name", dn,
-				"digest", digest,
-			)
-			return nil
-		}
-	case deploymentrecord.StatusDecommissioned:
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
-		if _, exists := c.observedDeployments.Get(cacheKey); exists {
-			slog.Debug("Deployment already deleted, skipping post",
-				"deployment_name", dn,
-				"digest", digest,
-			)
-			return nil
-		}
-	default:
-		return fmt.Errorf("invalid status: %s", status)
-	}
-
-	// Check if this artifact was previously unknown (404 from the API)
-	if _, exists := c.unknownArtifacts.Get(digest); exists {
-		dtmetrics.PostDeploymentRecordUnknownArtifactCacheHit.Inc()
-		slog.Debug("Artifact previously returned 404, skipping post",
-			"deployment_name", dn,
-			"digest", digest,
-		)
-		return nil
-	}
-
-	// Extract image name and tag
-	imageName, version := ociutil.ExtractName(container.Image)
-
-	// Format runtime risks and tags
-	var runtimeRisks []deploymentrecord.RuntimeRisk
-	var tags map[string]string
-	if aggPodMetadata != nil {
-		for risk := range aggPodMetadata.RuntimeRisks {
-			runtimeRisks = append(runtimeRisks, risk)
-		}
-		slices.Sort(runtimeRisks)
-		tags = aggPodMetadata.Tags
-	}
-
-	// Create deployment record
-	record := deploymentrecord.NewDeploymentRecord(
-		imageName,
-		digest,
-		version,
-		c.cfg.LogicalEnvironment,
-		c.cfg.PhysicalEnvironment,
-		c.cfg.Cluster,
-		status,
-		dn,
-		runtimeRisks,
-		tags,
-	)
-
-	if err := c.apiClient.PostOne(ctx, record); err != nil {
-		// Return if no artifact is found and cache the digest
-		var noArtifactErr *deploymentrecord.NoArtifactError
-		if errors.As(err, &noArtifactErr) {
-			c.unknownArtifacts.Set(digest, true, unknownArtifactTTL)
-			slog.Info("No artifact found, digest cached as unknown",
-				"deployment_name", dn,
-				"digest", digest,
-			)
-			return nil
-		}
-
-		// Make sure to not retry on client error messages
-		var clientErr *deploymentrecord.ClientError
-		if errors.As(err, &clientErr) {
-			slog.Warn("Failed to post record",
-				"event_type", eventType,
-				"name", record.Name,
-				"deployment_name", record.DeploymentName,
-				"status", record.Status,
-				"digest", record.Digest,
-				"error", err,
-			)
-			return nil
-		}
-
-		slog.Error("Failed to post record",
-			"event_type", eventType,
-			"name", record.Name,
-			"deployment_name", record.DeploymentName,
-			"status", record.Status,
-			"digest", record.Digest,
-			"error", err,
-		)
-		return err
-	}
-
-	slog.Info("Posted record",
-		"event_type", eventType,
-		"name", record.Name,
-		"deployment_name", record.DeploymentName,
-		"status", record.Status,
-		"digest", record.Digest,
-		"runtime_risks", record.RuntimeRisks,
-		"tags", record.Tags,
-	)
-
-	// Update cache after successful post
-	switch status {
-	case deploymentrecord.StatusDeployed:
-		cacheKey = getCacheKey(EventCreated, dn, digest)
-		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
-		// If there was a previous delete event, remove that
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
-		c.observedDeployments.Delete(cacheKey)
-	case deploymentrecord.StatusDecommissioned:
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
-		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
-		// If there was a previous create event, remove that
-		cacheKey = getCacheKey(EventCreated, dn, digest)
-		c.observedDeployments.Delete(cacheKey)
-	default:
-		return fmt.Errorf("invalid status: %s", status)
-	}
-
-	return nil
-}
-
-func getCacheKey(ev, dn, digest string) string {
-	return ev + "||" + dn + "||" + digest
-}
-
-// createInformerFactory creates a shared informer factory with the given resync period.
-// If excludeNamespaces is non-empty, it will exclude those namespaces from being watched.
-// If namespace is non-empty, it will only watch that namespace.
-func createInformerFactory(clientset kubernetes.Interface, namespace string, excludeNamespaces string) informers.SharedInformerFactory {
-	var factory informers.SharedInformerFactory
-	switch {
-	case namespace != "":
-		slog.Info("Namespace to watch",
-			"namespace",
-			namespace,
-		)
-		factory = informers.NewSharedInformerFactoryWithOptions(
-			clientset,
-			30*time.Second,
-			informers.WithNamespace(namespace),
-		)
-	case excludeNamespaces != "":
-		seenNamespaces := make(map[string]bool)
-		fieldSelectorParts := make([]string, 0)
-
-		for _, ns := range strings.Split(excludeNamespaces, ",") {
-			ns = strings.TrimSpace(ns)
-			if ns != "" && !seenNamespaces[ns] {
-				seenNamespaces[ns] = true
-				fieldSelectorParts = append(fieldSelectorParts, fmt.Sprintf("metadata.namespace!=%s", ns))
-			}
-		}
-
-		slog.Info("Excluding namespaces from watch",
-			"field_selector",
-			strings.Join(fieldSelectorParts, ","),
-		)
-		tweakListOptions := func(options *metav1.ListOptions) {
-			options.FieldSelector = strings.Join(fieldSelectorParts, ",")
-		}
-
-		factory = informers.NewSharedInformerFactoryWithOptions(
-			clientset,
-			30*time.Second,
-			informers.WithTweakListOptions(tweakListOptions),
-		)
-	default:
-		factory = informers.NewSharedInformerFactory(clientset,
-			30*time.Second,
-		)
-	}
-
-	return factory
-}
-
-// getARDeploymentName converts the pod's metadata into the correct format
-// for the deployment name for the artifact registry (this is not the same
-// as the K8s deployment's name!)
-// The deployment name must unique within logical, physical environment and
-// the cluster.
-func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string {
-	res := tmpl
-	res = strings.ReplaceAll(res, TmplNS, p.Namespace)
-	res = strings.ReplaceAll(res, TmplDN, getDeploymentName(p))
-	res = strings.ReplaceAll(res, TmplCN, c.Name)
-	return res
-}
-
-// getContainerDigest extracts the image digest from the container status.
-// The spec only contains the desired state, so any resolved digests must
-// be pulled from the status field.
-func getContainerDigest(pod *corev1.Pod, containerName string) string {
-	// Check regular container statuses
-	for _, status := range pod.Status.ContainerStatuses {
-		if status.Name == containerName {
-			return ociutil.ExtractDigest(status.ImageID)
-		}
-	}
-
-	// Check init container statuses
-	for _, status := range pod.Status.InitContainerStatuses {
-		if status.Name == containerName {
-			return ociutil.ExtractDigest(status.ImageID)
-		}
-	}
-
-	return ""
-}
-
-// getDeploymentName returns the deployment name for a pod, if it belongs
-// to one.
-func getDeploymentName(pod *corev1.Pod) string {
-	// Pods created by Deployments are owned by ReplicaSets
-	// The ReplicaSet name follows the pattern: <deployment-name>-<hash>
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "ReplicaSet" {
-			// Extract deployment name by removing the hash suffix
-			// ReplicaSet name format: <deployment-name>-<hash>
-			rsName := owner.Name
-			lastDash := strings.LastIndex(rsName, "-")
-			if lastDash > 0 {
-				return rsName[:lastDash]
-			}
-			return rsName
-		}
-	}
-	return ""
-}
-
-func podToPartialMetadata(pod *corev1.Pod) *metav1.PartialObjectMetadata {
-	return &metav1.PartialObjectMetadata{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "Pod",
-		},
-		ObjectMeta: pod.ObjectMeta,
-	}
 }
