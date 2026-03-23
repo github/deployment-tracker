@@ -494,6 +494,10 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		var noArtifactErr *deploymentrecord.NoArtifactError
 		if errors.As(err, &noArtifactErr) {
 			c.unknownArtifacts.Set(digest, true, unknownArtifactTTL)
+			slog.Info("No artifact found, digest cached as unknown",
+				"deployment_name", dn,
+				"digest", digest,
+			)
 			return nil
 		}
 
