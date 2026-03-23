@@ -103,7 +103,7 @@ func (c *Controller) registerEventHandlers() error {
 				return
 			}
 
-			key, err := cache.MetaNamespaceKeyFunc(obj)
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 			// For our purposes, there are in practice
 			// no error event we care about, so don't
 			// bother with handling it.
