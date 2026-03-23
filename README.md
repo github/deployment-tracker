@@ -140,6 +140,8 @@ The controller requires the following minimum permissions:
 | API Group | Resource | Verbs |
 |-----------|----------|-------|
 | `""` (core) | `pods` | `get`, `list`, `watch` |
+| `apps` | `deployments` | `get`, `list`, `watch` |
+| `apps` | `replicasets` | `get` |
 
 If you only need to monitor a single namespace, you can modify the manifest to use a `Role` and `RoleBinding` instead of `ClusterRole` and `ClusterRoleBinding` for more restricted permissions.
 
