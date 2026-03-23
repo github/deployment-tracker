@@ -110,7 +110,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods; `get` on other supported objects)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods and deployments; `get` on other supported objects)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
