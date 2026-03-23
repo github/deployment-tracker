@@ -1,0 +1,107 @@
+# Number of controller replicas
+replicaCount: 1
+
+image:
+  repository: ghcr.io/github/deployment-tracker
+  # Overrides the image tag (default is the chart appVersion)
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Controller configuration
+config:
+  # GitHub organization name (required)
+  org: ""
+  # Logical environment name (required)
+  logicalEnvironment: ""
+  # Cluster name (required)
+  cluster: ""
+  # Physical environment name
+  physicalEnvironment: ""
+  # API base URL
+  baseUrl: "api.github.com"
+  # Deployment name template
+  dnTemplate: "{{namespace}}/{{deploymentName}}/{{containerName}}"
+  # Namespace to monitor (empty for all namespaces)
+  namespace: ""
+  # Comma-separated list of namespaces to exclude from monitoring
+  excludeNamespaces: ""
+  # Number of worker goroutines
+  workers: 2
+  # Port for Prometheus metrics
+  metricsPort: 9090
+
+# Authentication configuration
+auth:
+  # Option 1: API token (plaintext value, use apiTokenSecret for production)
+  apiToken: ""
+  # Option 2: Reference to an existing Kubernetes Secret containing the API token
+  # The secret must have a key named "token"
+  apiTokenSecret: ""
+  # Option 3: GitHub App authentication
+  githubApp:
+    appId: ""
+    installId: ""
+    # Base64-encoded private key (use privateKeySecret for production)
+    privateKey: ""
+    # Reference to an existing Kubernetes Secret containing the GitHub App private key
+    # The secret must have a key named "private-key" with the base64-encoded key
+    privateKeySecret: ""
+
+serviceAccount:
+  # Whether to create a ServiceAccount
+  create: true
+  # Annotations to add to the ServiceAccount
+  annotations: {}
+  # The name of the ServiceAccount to use
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+service:
+  # Whether to create a Service for metrics
+  enabled: true
+  type: ClusterIP
+  port: 9090
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 1024Mi
+  limits:
+    cpu: 200m
+    memory: 2048Mi
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /metrics
+    port: metrics
+  initialDelaySeconds: 120
+
+# Lifecycle hooks
+lifecycle:
+  preStop:
+    exec:
+      command:
+        - sleep
+        - "5"
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
   release:
     name: Build and Release OCI Image
@@ -53,6 +57,28 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/github/artifact-attestations-opa-provider
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+
+      - name: Update chart version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i "s/^version:.*/version: ${VERSION}/" deploy/charts/deployment-tracker/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/charts/deployment-tracker/Chart.yaml
+
+      - name: Package Helm chart
+        run: helm package deploy/charts/deployment-tracker
+
+      - name: Log in to GHCR for Helm
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+          helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push Helm chart to GHCR
+        run: |
+          helm push deployment-tracker-*.tgz \
+            oci://ghcr.io/${{ github.repository_owner }}/charts

@@ -1,0 +1,131 @@
+{{- if and .Values.config.namespace .Values.config.excludeNamespaces }}
+{{- fail "config.namespace and config.excludeNamespaces are mutually exclusive and cannot both be set" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deployment-tracker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "deployment-tracker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "deployment-tracker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "deployment-tracker.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "deployment-tracker.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      dnsPolicy: ClusterFirst
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- $args := list }}
+          {{- if .Values.config.namespace }}
+          {{- $args = append $args (printf "-namespace=%s" .Values.config.namespace) }}
+          {{- end }}
+          {{- if .Values.config.excludeNamespaces }}
+          {{- $args = append $args (printf "-exclude-namespaces=%s" .Values.config.excludeNamespaces) }}
+          {{- end }}
+          {{- if ne (int .Values.config.workers) 2 }}
+          {{- $args = append $args (printf "-workers=%d" (int .Values.config.workers)) }}
+          {{- end }}
+          {{- if ne (int .Values.config.metricsPort) 9090 }}
+          {{- $args = append $args (printf "-metrics-port=%s" (toString .Values.config.metricsPort)) }}
+          {{- end }}
+          {{- if $args }}
+          args:
+            {{- range $args }}
+            - {{ . }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: GITHUB_ORG
+              value: {{ required "config.org is required" .Values.config.org | quote }}
+            - name: LOGICAL_ENVIRONMENT
+              value: {{ required "config.logicalEnvironment is required" .Values.config.logicalEnvironment | quote }}
+            - name: CLUSTER
+              value: {{ required "config.cluster is required" .Values.config.cluster | quote }}
+            {{- if .Values.config.physicalEnvironment }}
+            - name: PHYSICAL_ENVIRONMENT
+              value: {{ .Values.config.physicalEnvironment | quote }}
+            {{- end }}
+            - name: BASE_URL
+              value: {{ .Values.config.baseUrl | quote }}
+            - name: DN_TEMPLATE
+              value: {{ .Values.config.dnTemplate | quote }}
+            {{- if .Values.auth.apiToken }}
+            - name: API_TOKEN
+              value: {{ .Values.auth.apiToken | quote }}
+            {{- else if .Values.auth.apiTokenSecret }}
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.apiTokenSecret }}
+                  key: token
+            {{- end }}
+            {{- if .Values.auth.githubApp.appId }}
+            - name: GH_APP_ID
+              value: {{ .Values.auth.githubApp.appId | quote }}
+            {{- end }}
+            {{- if .Values.auth.githubApp.installId }}
+            - name: GH_INSTALL_ID
+              value: {{ .Values.auth.githubApp.installId | quote }}
+            {{- end }}
+            {{- if .Values.auth.githubApp.privateKey }}
+            - name: GH_APP_PRIVATE_KEY
+              value: {{ .Values.auth.githubApp.privateKey | quote }}
+            {{- else if .Values.auth.githubApp.privateKeySecret }}
+            - name: GH_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.githubApp.privateKeySecret }}
+                  key: private-key
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
