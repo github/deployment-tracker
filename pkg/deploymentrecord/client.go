@@ -170,6 +170,9 @@ type NoArtifactError struct {
 }
 
 func (n *NoArtifactError) Error() string {
+	if n == nil || n.err == nil {
+		return "no artifact found"
+	}
 	return fmt.Sprintf("no artifact found: %s", n.err.Error())
 }
 

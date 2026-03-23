@@ -31,6 +31,11 @@ const (
 	EventCreated = "CREATED"
 	// EventDeleted indicates that a pod has been deleted.
 	EventDeleted = "DELETED"
+
+	// unknownArtifactTTL is the TTL for cached 404 responses from the
+	// deployment record API. Once an artifact is known to be missing,
+	// we suppress further API calls for this duration.
+	unknownArtifactTTL = 1 * time.Hour
 )
 
 type ttlCache interface {
@@ -66,6 +71,9 @@ type Controller struct {
 	// post requests are idempotent, so if this cache fails due to
 	// restarts or other events, nothing will break.
 	observedDeployments ttlCache
+	// best effort cache to suppress API calls for artifacts that
+	// returned a 404 (no artifact found). Keyed by image digest.
+	unknownArtifacts ttlCache
 }
 
 // New creates a new deployment tracker controller.
@@ -113,6 +121,7 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		apiClient:           apiClient,
 		cfg:                 cfg,
 		observedDeployments: amcache.NewExpiring(),
+		unknownArtifacts:    amcache.NewExpiring(),
 	}
 
 	// Add event handlers to the informer
@@ -442,6 +451,16 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 		return fmt.Errorf("invalid status: %s", status)
 	}
 
+	// Check if this artifact was previously unknown (404 from the API)
+	if _, exists := c.unknownArtifacts.Get(digest); exists {
+		dtmetrics.PostDeploymentRecordUnknownArtifactCacheHit.Inc()
+		slog.Debug("Artifact previously returned 404, skipping post",
+			"deployment_name", dn,
+			"digest", digest,
+		)
+		return nil
+	}
+
 	// Extract image name and tag
 	imageName, version := ociutil.ExtractName(container.Image)
 
@@ -471,9 +490,14 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
-		// Return if no artifact is found
+		// Return if no artifact is found and cache the digest
 		var noArtifactErr *deploymentrecord.NoArtifactError
 		if errors.As(err, &noArtifactErr) {
+			c.unknownArtifacts.Set(digest, true, unknownArtifactTTL)
+			slog.Info("No artifact found, digest cached as unknown",
+				"deployment_name", dn,
+				"digest", digest,
+			)
 			return nil
 		}
 
