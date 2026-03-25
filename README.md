@@ -80,11 +80,11 @@ Two modes of authentication are supported:
 
 The `DN_TEMPLATE` supports the following placeholders:
 - `{{namespace}}` - Pod namespace
-- `{{deploymentName}}` - Name of the owning Deployment
+- `{{deploymentName}}` - Name of the owning workload (Deployment, DaemonSet, StatefulSet, CronJob, or Job)
 - `{{containerName}}` - Container name
 
 ## Annotations 
-Runtime risks and custom tags can be added to deployment records using annotations. Annotations will be aggregated from the pod and its owner reference objects (e.g. Deployment, ReplicaSet) so they can be added at any level of the ownership hierarchy.
+Runtime risks and custom tags can be added to deployment records using annotations. Annotations will be aggregated from the pod and its owner reference objects (e.g. Deployment, ReplicaSet, DaemonSet, StatefulSet, CronJob, Job) so they can be added at any level of the ownership hierarchy.
 
 ### Runtime Risks
 
@@ -110,7 +110,7 @@ which includes:
 
 - **Namespace**: `deployment-tracker`
 - **ServiceAccount**: Identity for the controller pod
-- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods and deployments; `get` on other supported objects)
+- **ClusterRole**: Minimal permissions (`get`, `list`, `watch` on pods, deployments, daemonsets, statefulsets, jobs, and cronjobs; `get` on replicasets)
 - **ClusterRoleBinding**: Binds the ServiceAccount to the ClusterRole
 - **Deployment**: Runs the controller with security hardening
 
@@ -142,6 +142,10 @@ The controller requires the following minimum permissions:
 | `""` (core) | `pods` | `get`, `list`, `watch` |
 | `apps` | `deployments` | `get`, `list`, `watch` |
 | `apps` | `replicasets` | `get` |
+| `apps` | `daemonsets` | `get`, `list`, `watch` |
+| `apps` | `statefulsets` | `get`, `list`, `watch` |
+| `batch` | `jobs` | `get`, `list`, `watch` |
+| `batch` | `cronjobs` | `get`, `list`, `watch` |
 
 If you only need to monitor a single namespace, you can modify the manifest to use a `Role` and `RoleBinding` instead of `ClusterRole` and `ClusterRoleBinding` for more restricted permissions.
 

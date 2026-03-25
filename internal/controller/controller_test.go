@@ -87,7 +87,7 @@ func TestRecordContainer_UnknownArtifactCachePopulatedOn404(t *testing.T) {
 	pod, container := testPod(digest)
 
 	// First call should hit the API and get a 404
-	err := ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err := ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls())
 
@@ -106,12 +106,12 @@ func TestRecordContainer_UnknownArtifactCacheSkipsAPICall(t *testing.T) {
 	pod, container := testPod(digest)
 
 	// First call — API returns 404, populates cache
-	err := ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err := ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls())
 
 	// Second call — should be served from cache, no API call
-	err = ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err = ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls(), "API should not be called for cached unknown artifact")
 }
@@ -126,12 +126,12 @@ func TestRecordContainer_UnknownArtifactCacheAppliesToDecommission(t *testing.T)
 	pod, container := testPod(digest)
 
 	// Deploy call — 404, populates cache
-	err := ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err := ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls())
 
 	// Decommission call for same digest — should skip API
-	err = ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDecommissioned, EventDeleted, nil)
+	err = ctrl.recordContainer(context.Background(), pod, container, EventDeleted, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls(), "decommission should also be skipped for cached unknown artifact")
 }
@@ -149,7 +149,7 @@ func TestRecordContainer_UnknownArtifactCacheExpires(t *testing.T) {
 	ctrl.unknownArtifacts.Set(digest, true, 50*time.Millisecond)
 
 	// Immediately — should be cached
-	err := ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err := ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, poster.getCalls(), "should skip API while cached")
 
@@ -157,7 +157,7 @@ func TestRecordContainer_UnknownArtifactCacheExpires(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// After expiry — should call API again
-	err = ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err = ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls(), "should call API after cache expiry")
 }
@@ -169,11 +169,367 @@ func TestRecordContainer_SuccessfulPostDoesNotPopulateUnknownCache(t *testing.T)
 	ctrl := newTestController(poster)
 	pod, container := testPod(digest)
 
-	err := ctrl.recordContainer(context.Background(), pod, container, deploymentrecord.StatusDeployed, EventCreated, nil)
+	err := ctrl.recordContainer(context.Background(), pod, container, EventCreated, "test-deployment", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getCalls())
 
 	// Digest should NOT be in the unknown artifacts cache
 	_, exists := ctrl.unknownArtifacts.Get(digest)
 	assert.False(t, exists, "successful post should not cache digest as unknown")
+}
+
+func TestHasSupportedOwner(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected bool
+	}{
+		{
+			name: "pod owned by ReplicaSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "ReplicaSet",
+						Name: "test-rs-abc123",
+					}},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "pod owned by Job",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "Job",
+						Name: "test-job",
+					}},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "pod with no owner",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: false,
+		},
+		{
+			name: "pod owned by DaemonSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "DaemonSet",
+						Name: "test-ds",
+					}},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "pod owned by StatefulSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "StatefulSet",
+						Name: "test-ss",
+					}},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "pod owned by ReplicationController",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "ReplicationController",
+						Name: "test-rc",
+					}},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := hasSupportedOwner(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetJobOwnerName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected string
+	}{
+		{
+			name: "pod owned by Job",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "Job",
+						Name: "my-job",
+					}},
+				},
+			},
+			expected: "my-job",
+		},
+		{
+			name: "pod not owned by Job",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "ReplicaSet",
+						Name: "my-rs-abc123",
+					}},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "pod with no owner",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := getJobOwnerName(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetWorkloadRef_Deployment(t *testing.T) {
+	t.Parallel()
+	ctrl := newTestController(&mockPoster{})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{{
+				Kind: "ReplicaSet",
+				Name: "my-deployment-abc123",
+			}},
+		},
+	}
+	wl := ctrl.getWorkloadRef(pod)
+	assert.Equal(t, "my-deployment", wl.Name)
+	assert.Equal(t, "Deployment", wl.Kind)
+}
+
+func TestGetWorkloadRef_DaemonSet(t *testing.T) {
+	t.Parallel()
+	ctrl := newTestController(&mockPoster{})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{{
+				Kind: "DaemonSet",
+				Name: "my-daemonset",
+			}},
+		},
+	}
+	wl := ctrl.getWorkloadRef(pod)
+	assert.Equal(t, "my-daemonset", wl.Name)
+	assert.Equal(t, "DaemonSet", wl.Kind)
+}
+
+func TestGetDaemonSetName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected string
+	}{
+		{
+			name: "pod owned by DaemonSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "DaemonSet",
+						Name: "my-daemonset",
+					}},
+				},
+			},
+			expected: "my-daemonset",
+		},
+		{
+			name: "pod not owned by DaemonSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "ReplicaSet",
+						Name: "my-rs-abc123",
+					}},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "pod with no owner",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := getDaemonSetName(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetStatefulSetName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected string
+	}{
+		{
+			name: "pod owned by StatefulSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "StatefulSet",
+						Name: "my-statefulset",
+					}},
+				},
+			},
+			expected: "my-statefulset",
+		},
+		{
+			name: "pod not owned by StatefulSet",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{
+						Kind: "ReplicaSet",
+						Name: "my-rs-abc123",
+					}},
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "pod with no owner",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{},
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := getStatefulSetName(tt.pod)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestGetWorkloadRef_StatefulSet(t *testing.T) {
+	t.Parallel()
+	ctrl := newTestController(&mockPoster{})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{{
+				Kind: "StatefulSet",
+				Name: "my-statefulset",
+			}},
+		},
+	}
+	wl := ctrl.getWorkloadRef(pod)
+	assert.Equal(t, "my-statefulset", wl.Name)
+	assert.Equal(t, "StatefulSet", wl.Kind)
+}
+
+func TestIsNumeric(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"28485120", true},
+		{"0", true},
+		{"123456789", true},
+		{"", false},
+		{"abc", false},
+		{"123abc", false},
+		{"12-34", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, isNumeric(tt.input))
+		})
+	}
+}
+
+func TestGetWorkloadRef_StandaloneJob(t *testing.T) {
+	t.Parallel()
+	// With nil listers, resolveJobWorkload falls back to standalone Job
+	ctrl := newTestController(&mockPoster{})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			OwnerReferences: []metav1.OwnerReference{{
+				Kind: "Job",
+				Name: "my-standalone-job",
+			}},
+		},
+	}
+	wl := ctrl.getWorkloadRef(pod)
+	assert.Equal(t, "my-standalone-job", wl.Name)
+	assert.Equal(t, "Job", wl.Kind)
+}
+
+func TestGetWorkloadRef_NoOwner(t *testing.T) {
+	t.Parallel()
+	ctrl := newTestController(&mockPoster{})
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{},
+	}
+	wl := ctrl.getWorkloadRef(pod)
+	assert.Empty(t, wl.Name)
+	assert.Empty(t, wl.Kind)
+}
+
+func TestIsTerminalPhase(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		phase    corev1.PodPhase
+		expected bool
+	}{
+		{"Succeeded", corev1.PodSucceeded, true},
+		{"Failed", corev1.PodFailed, true},
+		{"Running", corev1.PodRunning, false},
+		{"Pending", corev1.PodPending, false},
+		{"Unknown", corev1.PodUnknown, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pod := &corev1.Pod{
+				Status: corev1.PodStatus{Phase: tt.phase},
+			}
+			assert.Equal(t, tt.expected, isTerminalPhase(pod))
+		})
+	}
 }
