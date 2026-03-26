@@ -16,8 +16,12 @@ import (
 )
 
 func newPartialObject(uid, name, kind string, annotations map[string]string, owners []metav1.OwnerReference) *metav1.PartialObjectMetadata {
+	apiVersion := "apps/v1"
+	if kind == "Job" || kind == "CronJob" {
+		apiVersion = "batch/v1"
+	}
 	return &metav1.PartialObjectMetadata{
-		TypeMeta: metav1.TypeMeta{Kind: kind, APIVersion: "apps/v1"},
+		TypeMeta: metav1.TypeMeta{Kind: kind, APIVersion: apiVersion},
 		ObjectMeta: metav1.ObjectMeta{
 			UID:             types.UID(uid),
 			Name:            name,
@@ -29,8 +33,12 @@ func newPartialObject(uid, name, kind string, annotations map[string]string, own
 }
 
 func ownerRef(kind, name, uid string) metav1.OwnerReference {
+	apiVersion := "apps/v1"
+	if kind == "Job" || kind == "CronJob" {
+		apiVersion = "batch/v1"
+	}
 	return metav1.OwnerReference{
-		APIVersion: "apps/v1",
+		APIVersion: apiVersion,
 		Kind:       kind,
 		Name:       name,
 		UID:        types.UID(uid),
@@ -319,6 +327,56 @@ func TestBuildAggregatePodMetadata(t *testing.T) {
 			},
 			expectedTags: map[string]string{"team": "platform", "org": "engineering", "env": "prod"},
 		},
+		{
+			name: "aggregates through job to cronjob ownership chain: pod -> job -> cronjob",
+			pod: newPartialObject("pod-1", "my-pod", "Pod", map[string]string{
+				MetadataAnnotationPrefix + "team": "data",
+			}, []metav1.OwnerReference{ownerRef("Job", "my-cronjob-28485120", "job-1")}),
+			clusterObjects: []runtime.Object{
+				newPartialObject("job-1", "my-cronjob-28485120", "Job", map[string]string{
+					MetadataAnnotationPrefix + RuntimeRisksAnnotationKey: "sensitive-data",
+				}, []metav1.OwnerReference{ownerRef("CronJob", "my-cronjob", "cj-1")}),
+				newPartialObject("cj-1", "my-cronjob", "CronJob", map[string]string{
+					MetadataAnnotationPrefix + "env": "prod",
+				}, nil),
+			},
+			expectedRuntimeRisks: map[deploymentrecord.RuntimeRisk]bool{
+				deploymentrecord.SensitiveData: true,
+			},
+			expectedTags: map[string]string{"team": "data", "env": "prod"},
+		},
+		{
+			name: "aggregates metadata from daemonset owner",
+			pod: newPartialObject("pod-1", "my-pod", "Pod", map[string]string{
+				MetadataAnnotationPrefix + "team": "infra",
+			}, []metav1.OwnerReference{ownerRef("DaemonSet", "my-ds", "ds-1")}),
+			clusterObjects: []runtime.Object{
+				newPartialObject("ds-1", "my-ds", "DaemonSet", map[string]string{
+					MetadataAnnotationPrefix + RuntimeRisksAnnotationKey: "critical-resource",
+					MetadataAnnotationPrefix + "env":                     "prod",
+				}, nil),
+			},
+			expectedRuntimeRisks: map[deploymentrecord.RuntimeRisk]bool{
+				deploymentrecord.CriticalResource: true,
+			},
+			expectedTags: map[string]string{"team": "infra", "env": "prod"},
+		},
+		{
+			name: "aggregates metadata from statefulset owner",
+			pod: newPartialObject("pod-1", "my-pod", "Pod", map[string]string{
+				MetadataAnnotationPrefix + "team": "data",
+			}, []metav1.OwnerReference{ownerRef("StatefulSet", "my-ss", "ss-1")}),
+			clusterObjects: []runtime.Object{
+				newPartialObject("ss-1", "my-ss", "StatefulSet", map[string]string{
+					MetadataAnnotationPrefix + RuntimeRisksAnnotationKey: "sensitive-data",
+					MetadataAnnotationPrefix + "env":                     "prod",
+				}, nil),
+			},
+			expectedRuntimeRisks: map[deploymentrecord.RuntimeRisk]bool{
+				deploymentrecord.SensitiveData: true,
+			},
+			expectedTags: map[string]string{"team": "data", "env": "prod"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -327,6 +385,10 @@ func TestBuildAggregatePodMetadata(t *testing.T) {
 			_ = metav1.AddMetaToScheme(scheme)
 			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "ReplicaSet"}, &metav1.PartialObjectMetadata{})
 			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, &metav1.PartialObjectMetadata{})
+			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "DaemonSet"}, &metav1.PartialObjectMetadata{})
+			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "StatefulSet"}, &metav1.PartialObjectMetadata{})
+			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}, &metav1.PartialObjectMetadata{})
+			scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "CronJob"}, &metav1.PartialObjectMetadata{})
 
 			fakeClient := metadatafake.NewSimpleMetadataClient(scheme, tt.clusterObjects...)
 			m := NewAggregator(fakeClient)

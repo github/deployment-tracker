@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
+	batchlisters "k8s.io/client-go/listers/batch/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -60,16 +61,30 @@ type PodEvent struct {
 	DeletedPod *corev1.Pod // Only populated for delete events
 }
 
+// workloadRef describes the top-level workload that owns a pod.
+type workloadRef struct {
+	Name string
+	Kind string // "Deployment", "DaemonSet", "StatefulSet", "CronJob", or "Job"
+}
+
 // Controller is the Kubernetes controller for tracking deployments.
 type Controller struct {
-	clientset          kubernetes.Interface
-	metadataAggregator podMetadataAggregator
-	podInformer        cache.SharedIndexInformer
-	deploymentInformer cache.SharedIndexInformer
-	deploymentLister   appslisters.DeploymentLister
-	workqueue          workqueue.TypedRateLimitingInterface[PodEvent]
-	apiClient          deploymentRecordPoster
-	cfg                *Config
+	clientset           kubernetes.Interface
+	metadataAggregator  podMetadataAggregator
+	podInformer         cache.SharedIndexInformer
+	deploymentInformer  cache.SharedIndexInformer
+	deploymentLister    appslisters.DeploymentLister
+	daemonSetInformer   cache.SharedIndexInformer
+	daemonSetLister     appslisters.DaemonSetLister
+	statefulSetInformer cache.SharedIndexInformer
+	statefulSetLister   appslisters.StatefulSetLister
+	jobInformer         cache.SharedIndexInformer
+	jobLister           batchlisters.JobLister
+	cronJobInformer     cache.SharedIndexInformer
+	cronJobLister       batchlisters.CronJobLister
+	workqueue           workqueue.TypedRateLimitingInterface[PodEvent]
+	apiClient           deploymentRecordPoster
+	cfg                 *Config
 	// best effort cache to avoid redundant posts
 	// post requests are idempotent, so if this cache fails due to
 	// restarts or other events, nothing will break.
@@ -87,6 +102,14 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 	podInformer := factory.Core().V1().Pods().Informer()
 	deploymentInformer := factory.Apps().V1().Deployments().Informer()
 	deploymentLister := factory.Apps().V1().Deployments().Lister()
+	daemonSetInformer := factory.Apps().V1().DaemonSets().Informer()
+	daemonSetLister := factory.Apps().V1().DaemonSets().Lister()
+	statefulSetInformer := factory.Apps().V1().StatefulSets().Informer()
+	statefulSetLister := factory.Apps().V1().StatefulSets().Lister()
+	jobInformer := factory.Batch().V1().Jobs().Informer()
+	jobLister := factory.Batch().V1().Jobs().Lister()
+	cronJobInformer := factory.Batch().V1().CronJobs().Informer()
+	cronJobLister := factory.Batch().V1().CronJobs().Lister()
 
 	// Create work queue with rate limiting
 	queue := workqueue.NewTypedRateLimitingQueue(
@@ -124,6 +147,14 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		podInformer:         podInformer,
 		deploymentInformer:  deploymentInformer,
 		deploymentLister:    deploymentLister,
+		daemonSetInformer:   daemonSetInformer,
+		daemonSetLister:     daemonSetLister,
+		statefulSetInformer: statefulSetInformer,
+		statefulSetLister:   statefulSetLister,
+		jobInformer:         jobInformer,
+		jobLister:           jobLister,
+		cronJobInformer:     cronJobInformer,
+		cronJobLister:       cronJobLister,
 		workqueue:           queue,
 		apiClient:           apiClient,
 		cfg:                 cfg,
@@ -143,13 +174,25 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 			}
 
 			// Only process pods that are running and belong
-			// to a deployment
-			if pod.Status.Phase == corev1.PodRunning && getDeploymentName(pod) != "" {
+			// to a supported workload (Deployment, DaemonSet, StatefulSet, Job, or CronJob)
+			if pod.Status.Phase == corev1.PodRunning && hasSupportedOwner(pod) {
 				key, err := cache.MetaNamespaceKeyFunc(obj)
 
 				// For our purposes, there are in practice
 				// no error event we care about, so don't
 				// bother with handling it.
+				if err == nil {
+					queue.Add(PodEvent{
+						Key:       key,
+						EventType: EventCreated,
+					})
+				}
+			}
+
+			// Also process Job-owned pods that completed before
+			// we observed them in Running phase (e.g. sub-second Jobs).
+			if isTerminalPhase(pod) && getJobOwnerName(pod) != "" {
+				key, err := cache.MetaNamespaceKeyFunc(obj)
 				if err == nil {
 					queue.Add(PodEvent{
 						Key:       key,
@@ -175,9 +218,18 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 			}
 
 			// Skip if pod is being deleted or doesn't belong
-			// to a deployment
-			if newPod.DeletionTimestamp != nil || getDeploymentName(newPod) == "" {
-				return
+			// to a supported workload.
+			// Exception: Job-owned pods transitioning to a terminal phase
+			// (Succeeded/Failed) from a non-Running state should still be
+			// processed — this catches short-lived Jobs that skip Running.
+			// We exclude Running→terminal transitions since those pods
+			// were already enqueued when they entered Running.
+			isJobTerminal := !isTerminalPhase(oldPod) && isTerminalPhase(newPod) &&
+				oldPod.Status.Phase != corev1.PodRunning && getJobOwnerName(newPod) != ""
+			if !isJobTerminal {
+				if newPod.DeletionTimestamp != nil || !hasSupportedOwner(newPod) {
+					return
+				}
 			}
 
 			// Only process if pod just became running.
@@ -192,6 +244,18 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 				// For our purposes, there are in practice
 				// no error event we care about, so don't
 				// bother with handling it.
+				if err == nil {
+					queue.Add(PodEvent{
+						Key:       key,
+						EventType: EventCreated,
+					})
+				}
+			}
+
+			// Also catch Job-owned pods that transitioned directly
+			// to a terminal phase without us seeing them as Running.
+			if isJobTerminal {
+				key, err := cache.MetaNamespaceKeyFunc(newObj)
 				if err == nil {
 					queue.Add(PodEvent{
 						Key:       key,
@@ -214,8 +278,8 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 				}
 			}
 
-			// Only process pods that belong to a deployment
-			if getDeploymentName(pod) == "" {
+			// Only process pods that belong to a supported workload
+			if !hasSupportedOwner(pod) {
 				return
 			}
 
@@ -249,10 +313,21 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	// Start the informers
 	go c.podInformer.Run(ctx.Done())
 	go c.deploymentInformer.Run(ctx.Done())
+	go c.daemonSetInformer.Run(ctx.Done())
+	go c.statefulSetInformer.Run(ctx.Done())
+	go c.jobInformer.Run(ctx.Done())
+	go c.cronJobInformer.Run(ctx.Done())
 
 	// Wait for the caches to be synced
 	slog.Info("Waiting for informer caches to sync")
-	if !cache.WaitForCacheSync(ctx.Done(), c.podInformer.HasSynced, c.deploymentInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(),
+		c.podInformer.HasSynced,
+		c.deploymentInformer.HasSynced,
+		c.daemonSetInformer.HasSynced,
+		c.statefulSetInformer.HasSynced,
+		c.jobInformer.HasSynced,
+		c.cronJobInformer.HasSynced,
+	) {
 		return errors.New("timed out waiting for caches to sync")
 	}
 
@@ -314,6 +389,7 @@ func (c *Controller) processNextItem(ctx context.Context) bool {
 // processEvent processes a single pod event.
 func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	var pod *corev1.Pod
+	var wl workloadRef
 
 	if event.EventType == EventDeleted {
 		// For delete events, use the pod captured at deletion time
@@ -325,20 +401,22 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 			return nil
 		}
 
-		// Check if the parent deployment still exists
-		// If it does, this is just a scale-down event, skip it.
+		// Check if the parent workload still exists.
+		// If it does, this is just a scale-down event (or a completed
+		// Job pod while the CronJob is still active), skip it.
 		//
-		// If a deployment changes image versions, this will not
+		// If a workload changes image versions, this will not
 		// fire delete/decommissioned events to the remote API.
 		// This is as intended, as the server will keep track of
 		// the (cluster unique) deployment name, and just update
 		// the referenced image digest to the newly observed (via
 		// the create event).
-		deploymentName := getDeploymentName(pod)
-		if deploymentName != "" && c.deploymentExists(pod.Namespace, deploymentName) {
-			slog.Debug("Deployment still exists, skipping pod delete (scale down)",
+		wl = c.getWorkloadRef(pod)
+		if wl.Name != "" && c.workloadActive(pod.Namespace, wl) {
+			slog.Debug("Parent workload still exists, skipping pod delete",
 				"namespace", pod.Namespace,
-				"deployment", deploymentName,
+				"workload_kind", wl.Kind,
+				"workload_name", wl.Name,
 				"pod", pod.Name,
 			)
 			return nil
@@ -368,29 +446,37 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		}
 	}
 
-	status := deploymentrecord.StatusDeployed
-	if event.EventType == EventDeleted {
-		status = deploymentrecord.StatusDecommissioned
+	// Resolve the workload name for the deployment record.
+	// For delete events, wl was already resolved above.
+	if wl.Name == "" {
+		wl = c.getWorkloadRef(pod)
+	}
+	if wl.Name == "" {
+		slog.Debug("Could not resolve workload name for pod, skipping",
+			"namespace", pod.Namespace,
+			"pod", pod.Name,
+		)
+		return nil
 	}
 
 	var lastErr error
 
 	// Gather aggregate metadata for adds/updates
 	var aggPodMetadata *metadata.AggregatePodMetadata
-	if status != deploymentrecord.StatusDecommissioned {
+	if event.EventType != EventDeleted {
 		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
 	}
 
 	// Record info for each container in the pod
 	for _, container := range pod.Spec.Containers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
+		if err := c.recordContainer(ctx, pod, container, event.EventType, wl.Name, aggPodMetadata); err != nil {
 			lastErr = err
 		}
 	}
 
 	// Also record init containers
 	for _, container := range pod.Spec.InitContainers {
-		if err := c.recordContainer(ctx, pod, container, status, event.EventType, aggPodMetadata); err != nil {
+		if err := c.recordContainer(ctx, pod, container, event.EventType, wl.Name, aggPodMetadata); err != nil {
 			lastErr = err
 		}
 	}
@@ -416,10 +502,15 @@ func (c *Controller) deploymentExists(namespace, name string) bool {
 }
 
 // recordContainer records a single container's deployment info.
-func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, status, eventType string, aggPodMetadata *metadata.AggregatePodMetadata) error {
+func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) error {
 	var cacheKey string
 
-	dn := getARDeploymentName(pod, container, c.cfg.Template)
+	status := deploymentrecord.StatusDeployed
+	if eventType == EventDeleted {
+		status = deploymentrecord.StatusDecommissioned
+	}
+
+	dn := getARDeploymentName(pod, container, c.cfg.Template, workloadName)
 	digest := getContainerDigest(pod, container.Name)
 
 	if dn == "" || digest == "" {
@@ -567,6 +658,19 @@ func getCacheKey(ev, dn, digest string) string {
 	return ev + "||" + dn + "||" + digest
 }
 
+// isNumeric returns true if s is non-empty and consists entirely of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // createInformerFactory creates a shared informer factory with the given resync period.
 // If excludeNamespaces is non-empty, it will exclude those namespaces from being watched.
 // If namespace is non-empty, it will only watch that namespace.
@@ -622,10 +726,10 @@ func createInformerFactory(clientset kubernetes.Interface, namespace string, exc
 // as the K8s deployment's name!)
 // The deployment name must unique within logical, physical environment and
 // the cluster.
-func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl string) string {
+func getARDeploymentName(p *corev1.Pod, c corev1.Container, tmpl, workloadName string) string {
 	res := tmpl
 	res = strings.ReplaceAll(res, TmplNS, p.Namespace)
-	res = strings.ReplaceAll(res, TmplDN, getDeploymentName(p))
+	res = strings.ReplaceAll(res, TmplDN, workloadName)
 	res = strings.ReplaceAll(res, TmplCN, c.Name)
 	return res
 }
@@ -651,6 +755,24 @@ func getContainerDigest(pod *corev1.Pod, containerName string) string {
 	return ""
 }
 
+// hasSupportedOwner returns true if the pod is owned by a supported
+// workload controller (ReplicaSet for Deployments, DaemonSet, StatefulSet, or Job for Jobs/CronJobs).
+func hasSupportedOwner(pod *corev1.Pod) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "ReplicaSet" || owner.Kind == "DaemonSet" || owner.Kind == "StatefulSet" || owner.Kind == "Job" {
+			return true
+		}
+	}
+	return false
+}
+
+// isTerminalPhase returns true if the pod has reached a terminal phase
+// (Succeeded or Failed). Used to catch short-lived Job pods that complete
+// before the controller observes them in the Running phase.
+func isTerminalPhase(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
 // getDeploymentName returns the deployment name for a pod, if it belongs
 // to one.
 func getDeploymentName(pod *corev1.Pod) string {
@@ -669,6 +791,197 @@ func getDeploymentName(pod *corev1.Pod) string {
 		}
 	}
 	return ""
+}
+
+// getJobOwnerName returns the Job name from the pod's owner references,
+// if the pod is owned by a Job.
+func getJobOwnerName(pod *corev1.Pod) string {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "Job" {
+			return owner.Name
+		}
+	}
+	return ""
+}
+
+// getDaemonSetName returns the DaemonSet name for a pod, if it belongs
+// to one. DaemonSet pods are owned directly by the DaemonSet.
+func getDaemonSetName(pod *corev1.Pod) string {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "DaemonSet" {
+			return owner.Name
+		}
+	}
+	return ""
+}
+
+// getStatefulSetName returns the StatefulSet name for a pod, if it belongs
+// to one. StatefulSet pods are owned directly by the StatefulSet.
+func getStatefulSetName(pod *corev1.Pod) string {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "StatefulSet" {
+			return owner.Name
+		}
+	}
+	return ""
+}
+
+// getWorkloadRef resolves the top-level workload that owns a pod.
+// For Deployment-owned pods (via ReplicaSets), returns the Deployment name.
+// For DaemonSet-owned pods, returns the DaemonSet name.
+// For StatefulSet-owned pods, returns the StatefulSet name.
+// For CronJob-owned pods (via Jobs), returns the CronJob name.
+// For standalone Job-owned pods, returns the Job name.
+func (c *Controller) getWorkloadRef(pod *corev1.Pod) workloadRef {
+	// Check for Deployment (via ReplicaSet)
+	if dn := getDeploymentName(pod); dn != "" {
+		return workloadRef{Name: dn, Kind: "Deployment"}
+	}
+
+	// Check for DaemonSet (direct ownership)
+	if dsn := getDaemonSetName(pod); dsn != "" {
+		return workloadRef{Name: dsn, Kind: "DaemonSet"}
+	}
+
+	// Check for StatefulSet (direct ownership)
+	if ssn := getStatefulSetName(pod); ssn != "" {
+		return workloadRef{Name: ssn, Kind: "StatefulSet"}
+	}
+
+	// Check for Job
+	jobName := getJobOwnerName(pod)
+	if jobName == "" {
+		return workloadRef{}
+	}
+
+	return c.resolveJobWorkload(pod.Namespace, jobName)
+}
+
+// resolveJobWorkload determines whether a Job is owned by a CronJob or is standalone.
+func (c *Controller) resolveJobWorkload(namespace, jobName string) workloadRef {
+	// Try to look up the Job to check for CronJob ownership
+	if c.jobLister != nil {
+		job, err := c.jobLister.Jobs(namespace).Get(jobName)
+		if err == nil {
+			for _, owner := range job.OwnerReferences {
+				if owner.Kind == "CronJob" {
+					return workloadRef{Name: owner.Name, Kind: "CronJob"}
+				}
+			}
+			return workloadRef{Name: jobName, Kind: "Job"}
+		}
+	}
+
+	// Job not found in cache - try CronJob name derivation as fallback.
+	// CronJob-created Jobs follow the naming pattern: <cronjob-name>-<unix-timestamp>
+	// where the suffix is always numeric. We validate the suffix is all digits to
+	// reduce false matches from standalone Jobs that coincidentally share a prefix
+	// with an existing CronJob. A residual false positive is still possible if a
+	// standalone Job is named exactly <cronjob>-<digits>, but the primary path
+	// (checking Job OwnerReferences) handles the common case; this fallback only
+	// fires when the Job has already been garbage-collected.
+	if c.cronJobLister != nil {
+		lastDash := strings.LastIndex(jobName, "-")
+		if lastDash > 0 {
+			suffix := jobName[lastDash+1:]
+			if isNumeric(suffix) {
+				potentialCronJobName := jobName[:lastDash]
+				if c.cronJobExists(namespace, potentialCronJobName) {
+					return workloadRef{Name: potentialCronJobName, Kind: "CronJob"}
+				}
+			}
+		}
+	}
+
+	// Standalone Job (possibly already deleted)
+	return workloadRef{Name: jobName, Kind: "Job"}
+}
+
+// workloadActive checks if the parent workload for a pod still exists
+// in the local informer cache.
+func (c *Controller) workloadActive(namespace string, ref workloadRef) bool {
+	switch ref.Kind {
+	case "Deployment":
+		return c.deploymentExists(namespace, ref.Name)
+	case "DaemonSet":
+		return c.daemonSetExists(namespace, ref.Name)
+	case "StatefulSet":
+		return c.statefulSetExists(namespace, ref.Name)
+	case "CronJob":
+		return c.cronJobExists(namespace, ref.Name)
+	case "Job":
+		return c.jobExists(namespace, ref.Name)
+	default:
+		return false
+	}
+}
+
+// jobExists checks if a job exists in the local informer cache.
+func (c *Controller) jobExists(namespace, name string) bool {
+	_, err := c.jobLister.Jobs(namespace).Get(name)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false
+		}
+		slog.Warn("Failed to check if job exists in cache, assuming it does",
+			"namespace", namespace,
+			"job", name,
+			"error", err,
+		)
+		return true
+	}
+	return true
+}
+
+// daemonSetExists checks if a daemonset exists in the local informer cache.
+func (c *Controller) daemonSetExists(namespace, name string) bool {
+	_, err := c.daemonSetLister.DaemonSets(namespace).Get(name)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false
+		}
+		slog.Warn("Failed to check if daemonset exists in cache, assuming it does",
+			"namespace", namespace,
+			"daemonset", name,
+			"error", err,
+		)
+		return true
+	}
+	return true
+}
+
+// statefulSetExists checks if a statefulset exists in the local informer cache.
+func (c *Controller) statefulSetExists(namespace, name string) bool {
+	_, err := c.statefulSetLister.StatefulSets(namespace).Get(name)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false
+		}
+		slog.Warn("Failed to check if statefulset exists in cache, assuming it does",
+			"namespace", namespace,
+			"statefulset", name,
+			"error", err,
+		)
+		return true
+	}
+	return true
+}
+
+// cronJobExists checks if a cronjob exists in the local informer cache.
+func (c *Controller) cronJobExists(namespace, name string) bool {
+	_, err := c.cronJobLister.CronJobs(namespace).Get(name)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false
+		}
+		slog.Warn("Failed to check if cronjob exists in cache, assuming it does",
+			"namespace", namespace,
+			"cronjob", name,
+			"error", err,
+		)
+		return true
+	}
+	return true
 }
 
 func podToPartialMetadata(pod *corev1.Pod) *metav1.PartialObjectMetadata {

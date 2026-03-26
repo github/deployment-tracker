@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -119,7 +120,14 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 	go func() {
 		_ = ctrl.Run(ctx, 1)
 	}()
-	if !cache.WaitForCacheSync(ctx.Done(), ctrl.podInformer.HasSynced, ctrl.deploymentInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(),
+		ctrl.podInformer.HasSynced,
+		ctrl.deploymentInformer.HasSynced,
+		ctrl.daemonSetInformer.HasSynced,
+		ctrl.statefulSetInformer.HasSynced,
+		ctrl.jobInformer.HasSynced,
+		ctrl.cronJobInformer.HasSynced,
+	) {
 		t.Fatal("timed out waiting for informer cache to sync")
 	}
 
@@ -283,6 +291,231 @@ func deletePod(t *testing.T, clientset *kubernetes.Clientset, namespace, name st
 	err := clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil {
 		t.Fatalf("failed to delete Pod: %v", err)
+	}
+}
+
+func makeDaemonSet(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) *appsv1.DaemonSet {
+	t.Helper()
+	ctx := context.Background()
+	labels := map[string]string{"app": name}
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "agent", Image: "fluentd:latest"}},
+				},
+			},
+		},
+	}
+	created, err := clientset.AppsV1().DaemonSets(namespace).Create(ctx, ds, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create DaemonSet: %v", err)
+	}
+	return created
+}
+
+func makeDaemonSetPod(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "agent", Image: "fluentd:latest"}},
+		},
+	}
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Pod: %v", err)
+	}
+
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	pending.Status.Phase = corev1.PodRunning
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "agent",
+		ImageID: "docker-pullable://fluentd@sha256:dsdigest123",
+	}}
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Running: %v", err)
+	}
+	return updated
+}
+
+func deleteDaemonSet(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) {
+	t.Helper()
+	ctx := context.Background()
+	err := clientset.AppsV1().DaemonSets(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("failed to delete DaemonSet: %v", err)
+	}
+}
+
+func makeCronJob(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) *batchv1.CronJob {
+	t.Helper()
+	ctx := context.Background()
+	cronJob := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: batchv1.CronJobSpec{
+			Schedule: "*/5 * * * *",
+			JobTemplate: batchv1.JobTemplateSpec{
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers:    []corev1.Container{{Name: "worker", Image: "busybox:latest"}},
+							RestartPolicy: corev1.RestartPolicyNever,
+						},
+					},
+				},
+			},
+		},
+	}
+	created, err := clientset.BatchV1().CronJobs(namespace).Create(ctx, cronJob, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create CronJob: %v", err)
+	}
+	return created
+}
+
+func makeJob(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *batchv1.Job {
+	t.Helper()
+	ctx := context.Background()
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers:    []corev1.Container{{Name: "worker", Image: "busybox:latest"}},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
+			},
+		},
+	}
+	created, err := clientset.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Job: %v", err)
+	}
+	return created
+}
+
+func makeJobPod(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: corev1.PodSpec{
+			Containers:    []corev1.Container{{Name: "worker", Image: "busybox:latest"}},
+			RestartPolicy: corev1.RestartPolicyNever,
+		},
+	}
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Pod: %v", err)
+	}
+
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	pending.Status.Phase = corev1.PodRunning
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "worker",
+		ImageID: "docker-pullable://busybox@sha256:jobdigest789",
+	}}
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Running: %v", err)
+	}
+	return updated
+}
+
+// makeCompletedJobPod creates a Job-owned pod that transitions directly from
+// Pending to Succeeded, skipping the Running phase. This simulates a very
+// short-lived Job (e.g. sub-second container execution) where the kubelet
+// reports the final status without an intermediate Running update.
+func makeCompletedJobPod(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: corev1.PodSpec{
+			Containers:    []corev1.Container{{Name: "worker", Image: "busybox:latest"}},
+			RestartPolicy: corev1.RestartPolicyNever,
+		},
+	}
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Pod: %v", err)
+	}
+
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	// Transition directly to Succeeded without passing through Running
+	pending.Status.Phase = corev1.PodSucceeded
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "worker",
+		ImageID: "docker-pullable://busybox@sha256:jobdigest789",
+	}}
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Succeeded: %v", err)
+	}
+	return updated
+}
+
+func deleteCronJob(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) {
+	t.Helper()
+	ctx := context.Background()
+	err := clientset.BatchV1().CronJobs(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("failed to delete CronJob: %v", err)
+	}
+}
+
+func deleteJob(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) {
+	t.Helper()
+	ctx := context.Background()
+	propagation := metav1.DeletePropagationBackground
+	err := clientset.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{
+		PropagationPolicy: &propagation,
+	})
+	if err != nil {
+		t.Fatalf("failed to delete Job: %v", err)
 	}
 }
 
@@ -526,4 +759,339 @@ func TestControllerIntegration_ExcludeNamespaces(t *testing.T) {
 	require.Never(t, func() bool {
 		return len(mock.getRecords()) != 1
 	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func TestControllerIntegration_StandaloneJobLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, "", "")
+
+	// Create a standalone Job and its pod; expect 1 record
+	job := makeJob(t, clientset, []metav1.OwnerReference{}, namespace, "standalone-job")
+	_ = makeJobPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "Job",
+		Name:       job.Name,
+		UID:        job.UID,
+	}}, namespace, "standalone-job-pod-1")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 1
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
+	assert.Equal(t, fmt.Sprintf("%s/standalone-job/worker", namespace), records[0].DeploymentName)
+
+	// Delete the pod while the Job still exists; should not decommission (like scale-down)
+	deletePod(t, clientset, namespace, "standalone-job-pod-1")
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Create a new pod for the same job and then delete both.
+	// The second pod has the same deployment name and digest, so the dedup
+	// cache suppresses a duplicate CREATED record (2-minute TTL).
+	_ = makeJobPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "Job",
+		Name:       job.Name,
+		UID:        job.UID,
+	}}, namespace, "standalone-job-pod-2")
+
+	// Delete the Job first, then the pod manually (envtest has no garbage
+	// collector, so Background propagation does not cascade pod deletion).
+	deleteJob(t, clientset, namespace, "standalone-job")
+	deletePod(t, clientset, namespace, "standalone-job-pod-2")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 2
+	}, 3*time.Second, 100*time.Millisecond)
+	records = mock.getRecords()
+	require.Len(t, records, 2)
+	assert.Equal(t, deploymentrecord.StatusDecommissioned, records[1].Status)
+	assert.Equal(t, fmt.Sprintf("%s/standalone-job/worker", namespace), records[1].DeploymentName)
+}
+
+func TestControllerIntegration_ShortLivedJobCaughtOnCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, "", "")
+
+	// Create a Job and a pod that goes directly from Pending to Succeeded
+	// (simulating a sub-second Job that completes before the Running phase is observed).
+	job := makeJob(t, clientset, []metav1.OwnerReference{}, namespace, "fast-job")
+	_ = makeCompletedJobPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "Job",
+		Name:       job.Name,
+		UID:        job.UID,
+	}}, namespace, "fast-job-pod-1")
+
+	// The controller should still catch it via the terminal phase handler
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 1
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
+	assert.Equal(t, fmt.Sprintf("%s/fast-job/worker", namespace), records[0].DeploymentName)
+}
+
+func TestControllerIntegration_CronJobLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, "", "")
+
+	// Create a CronJob, a Job owned by it, and a pod; expect 1 record
+	cronJob := makeCronJob(t, clientset, namespace, "my-cronjob")
+	job := makeJob(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "CronJob",
+		Name:       cronJob.Name,
+		UID:        cronJob.UID,
+	}}, namespace, "my-cronjob-28485120")
+	_ = makeJobPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "Job",
+		Name:       job.Name,
+		UID:        job.UID,
+	}}, namespace, "my-cronjob-28485120-pod-1")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 1
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
+	// The deployment name should use the CronJob name, not the Job name
+	assert.Equal(t, fmt.Sprintf("%s/my-cronjob/worker", namespace), records[0].DeploymentName)
+
+	// Delete the Job and pod while CronJob still exists; should not decommission
+	deleteJob(t, clientset, namespace, "my-cronjob-28485120")
+	deletePod(t, clientset, namespace, "my-cronjob-28485120-pod-1")
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Now delete the CronJob and create a new job+pod to simulate final cleanup
+	deleteCronJob(t, clientset, namespace, "my-cronjob")
+
+	// Create another job+pod that gets cleaned up after CronJob deletion.
+	// The dedup cache suppresses a new CREATED since the deployment name
+	// and digest match the earlier record (2-minute TTL).
+	job2 := makeJob(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "CronJob",
+		Name:       cronJob.Name,
+		UID:        cronJob.UID,
+	}}, namespace, "my-cronjob-28485240")
+	pod2 := makeJobPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "batch/v1",
+		Kind:       "Job",
+		Name:       job2.Name,
+		UID:        job2.UID,
+	}}, namespace, "my-cronjob-28485240-pod-1")
+
+	// Delete the pod first so the Job is still in the informer cache
+	// when the delete event is processed — this allows resolveJobWorkload
+	// to find the CronJob owner via the Job's OwnerReferences.
+	// Then delete the Job for cleanup.
+	deletePod(t, clientset, namespace, pod2.Name)
+	deleteJob(t, clientset, namespace, "my-cronjob-28485240")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 2
+	}, 3*time.Second, 100*time.Millisecond)
+	records = mock.getRecords()
+	require.Len(t, records, 2)
+	assert.Equal(t, deploymentrecord.StatusDecommissioned, records[1].Status)
+	assert.Equal(t, fmt.Sprintf("%s/my-cronjob/worker", namespace), records[1].DeploymentName)
+}
+
+func TestControllerIntegration_DaemonSetLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, "", "")
+
+	// Create a DaemonSet and a pod owned by it; expect 1 record
+	ds := makeDaemonSet(t, clientset, namespace, "logging-agent")
+	_ = makeDaemonSetPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "DaemonSet",
+		Name:       ds.Name,
+		UID:        ds.UID,
+	}}, namespace, "logging-agent-node1")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 1
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
+	assert.Equal(t, fmt.Sprintf("%s/logging-agent/agent", namespace), records[0].DeploymentName)
+
+	// Delete the pod while DaemonSet still exists; should NOT decommission
+	deletePod(t, clientset, namespace, "logging-agent-node1")
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Create another pod, then delete both the DaemonSet and pod.
+	// The dedup cache suppresses a new CREATED since the deployment name
+	// and digest match the earlier record (2-minute TTL).
+	pod2 := makeDaemonSetPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "DaemonSet",
+		Name:       ds.Name,
+		UID:        ds.UID,
+	}}, namespace, "logging-agent-node2")
+
+	deleteDaemonSet(t, clientset, namespace, "logging-agent")
+	deletePod(t, clientset, namespace, pod2.Name)
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 2
+	}, 3*time.Second, 100*time.Millisecond)
+	records = mock.getRecords()
+	require.Len(t, records, 2)
+	assert.Equal(t, deploymentrecord.StatusDecommissioned, records[1].Status)
+	assert.Equal(t, fmt.Sprintf("%s/logging-agent/agent", namespace), records[1].DeploymentName)
+}
+
+func makeStatefulSet(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) *appsv1.StatefulSet {
+	t.Helper()
+	ctx := context.Background()
+	labels := map[string]string{"app": name}
+	ss := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			ServiceName: name,
+			Selector:    &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "db", Image: "postgres:latest"}},
+				},
+			},
+		},
+	}
+	created, err := clientset.AppsV1().StatefulSets(namespace).Create(ctx, ss, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create StatefulSet: %v", err)
+	}
+	return created
+}
+
+func makeStatefulSetPod(t *testing.T, clientset *kubernetes.Clientset, owners []metav1.OwnerReference, namespace, name string) *corev1.Pod {
+	t.Helper()
+	ctx := context.Background()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "db", Image: "postgres:latest"}},
+		},
+	}
+	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Pod: %v", err)
+	}
+
+	created.Status.Phase = corev1.PodPending
+	pending, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Pending: %v", err)
+	}
+
+	pending.Status.Phase = corev1.PodRunning
+	pending.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:    "db",
+		ImageID: "docker-pullable://postgres@sha256:ssdigest456",
+	}}
+	updated, err := clientset.CoreV1().Pods(namespace).UpdateStatus(ctx, pending, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("failed to update Pod status to Running: %v", err)
+	}
+	return updated
+}
+
+func deleteStatefulSet(t *testing.T, clientset *kubernetes.Clientset, namespace, name string) {
+	t.Helper()
+	ctx := context.Background()
+	err := clientset.AppsV1().StatefulSets(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Fatalf("failed to delete StatefulSet: %v", err)
+	}
+}
+
+func TestControllerIntegration_StatefulSetLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	t.Parallel()
+	namespace := "test-controller-ns"
+	clientset, mock := setup(t, "", "")
+
+	// Create a StatefulSet and a pod owned by it; expect 1 record
+	ss := makeStatefulSet(t, clientset, namespace, "my-db")
+	_ = makeStatefulSetPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "StatefulSet",
+		Name:       ss.Name,
+		UID:        ss.UID,
+	}}, namespace, "my-db-0")
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 1
+	}, 3*time.Second, 100*time.Millisecond)
+	records := mock.getRecords()
+	require.Len(t, records, 1)
+	assert.Equal(t, deploymentrecord.StatusDeployed, records[0].Status)
+	assert.Equal(t, fmt.Sprintf("%s/my-db/db", namespace), records[0].DeploymentName)
+
+	// Delete the pod while StatefulSet still exists; should NOT decommission
+	deletePod(t, clientset, namespace, "my-db-0")
+	require.Never(t, func() bool {
+		return len(mock.getRecords()) != 1
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// Create another pod, then delete both the StatefulSet and pod.
+	// The dedup cache suppresses a new CREATED since the deployment name
+	// and digest match the earlier record (2-minute TTL).
+	pod2 := makeStatefulSetPod(t, clientset, []metav1.OwnerReference{{
+		APIVersion: "apps/v1",
+		Kind:       "StatefulSet",
+		Name:       ss.Name,
+		UID:        ss.UID,
+	}}, namespace, "my-db-1")
+
+	deleteStatefulSet(t, clientset, namespace, "my-db")
+	deletePod(t, clientset, namespace, pod2.Name)
+
+	require.Eventually(t, func() bool {
+		return len(mock.getRecords()) >= 2
+	}, 3*time.Second, 100*time.Millisecond)
+	records = mock.getRecords()
+	require.Len(t, records, 2)
+	assert.Equal(t, deploymentrecord.StatusDecommissioned, records[1].Status)
+	assert.Equal(t, fmt.Sprintf("%s/my-db/db", namespace), records[1].DeploymentName)
 }

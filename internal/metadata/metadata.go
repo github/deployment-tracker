@@ -101,15 +101,28 @@ func (m *Aggregator) addOwnersToQueue(ctx context.Context, current *metav1.Parti
 // getOwnerMetadata retrieves partial object metadata for an owner ref.
 func (m *Aggregator) getOwnerMetadata(ctx context.Context, namespace string, owner metav1.OwnerReference) (*metav1.PartialObjectMetadata, error) {
 	gvr := schema.GroupVersionResource{
-		Group:   "apps",
 		Version: "v1",
 	}
 
 	switch owner.Kind {
 	case "ReplicaSet":
+		gvr.Group = "apps"
 		gvr.Resource = "replicasets"
 	case "Deployment":
+		gvr.Group = "apps"
 		gvr.Resource = "deployments"
+	case "DaemonSet":
+		gvr.Group = "apps"
+		gvr.Resource = "daemonsets"
+	case "StatefulSet":
+		gvr.Group = "apps"
+		gvr.Resource = "statefulsets"
+	case "Job":
+		gvr.Group = "batch"
+		gvr.Resource = "jobs"
+	case "CronJob":
+		gvr.Group = "batch"
+		gvr.Resource = "cronjobs"
 	default:
 		slog.Debug("Unsupported owner kind for metadata collection",
 			"kind", owner.Kind,
