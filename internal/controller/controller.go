@@ -38,6 +38,10 @@ const (
 	// deployment record API. Once an artifact is known to be missing,
 	// we suppress further API calls for this duration.
 	unknownArtifactTTL = 1 * time.Hour
+
+	// informerSyncTimeoutDuration is the maximum duration of time allowed
+	// for the informers to sync to prevent the controller from hanging indefinitely.
+	informerSyncTimeoutDuration = 60 * time.Second
 )
 
 type ttlCache interface {
@@ -92,6 +96,9 @@ type Controller struct {
 	// best effort cache to suppress API calls for artifacts that
 	// returned a 404 (no artifact found). Keyed by image digest.
 	unknownArtifacts ttlCache
+	// informerSyncTimeout is the maximum time allowed for all informers to sync
+	// and prevents sync from hanging indefinitely.
+	informerSyncTimeout time.Duration
 }
 
 // New creates a new deployment tracker controller.
@@ -160,6 +167,7 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		cfg:                 cfg,
 		observedDeployments: amcache.NewExpiring(),
 		unknownArtifacts:    amcache.NewExpiring(),
+		informerSyncTimeout: informerSyncTimeoutDuration,
 	}
 
 	// Add event handlers to the informer
@@ -320,7 +328,9 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 
 	// Wait for the caches to be synced
 	slog.Info("Waiting for informer caches to sync")
-	if !cache.WaitForCacheSync(ctx.Done(),
+	informerSyncCxt, cancel := context.WithTimeout(ctx, c.informerSyncTimeout)
+
+	if !cache.WaitForCacheSync(informerSyncCxt.Done(),
 		c.podInformer.HasSynced,
 		c.deploymentInformer.HasSynced,
 		c.daemonSetInformer.HasSynced,
@@ -328,8 +338,10 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 		c.jobInformer.HasSynced,
 		c.cronJobInformer.HasSynced,
 	) {
-		return errors.New("timed out waiting for caches to sync")
+		cancel()
+		return errors.New("timed out waiting for caches to sync - please ensure deployment tracker has the correct kubernetes permissions")
 	}
+	cancel()
 
 	slog.Info("Starting workers",
 		"count", workers,
