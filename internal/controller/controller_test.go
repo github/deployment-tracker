@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -545,7 +546,7 @@ func TestRun_InformerSyncTimeout(t *testing.T) {
 	fakeClient.PrependReactor("list", "*", func(_ k8stesting.Action) (bool, runtime.Object, error) {
 		// Block until the test completes.
 		<-blocker
-		return true, nil, fmt.Errorf("fail")
+		return true, nil, errors.New("fail")
 	})
 	defer close(blocker)
 
