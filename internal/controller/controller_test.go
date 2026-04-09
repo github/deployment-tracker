@@ -545,7 +545,7 @@ func TestRun_InformerSyncTimeout(t *testing.T) {
 	fakeClient.PrependReactor("list", "*", func(_ k8stesting.Action) (bool, runtime.Object, error) {
 		// Block until the test completes.
 		<-blocker
-		return true, nil, nil
+		return true, nil, fmt.Errorf("fail")
 	})
 	defer close(blocker)
 
@@ -569,9 +569,12 @@ func TestRun_InformerSyncTimeout(t *testing.T) {
 		informerSyncTimeout: 2 * time.Second,
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- ctrl.Run(context.Background(), 1)
+		errCh <- ctrl.Run(ctx, 1)
 	}()
 
 	select {

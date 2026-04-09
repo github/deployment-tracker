@@ -339,6 +339,9 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 		c.cronJobInformer.HasSynced,
 	) {
 		cancel()
+		if ctx.Err() != nil {
+			return fmt.Errorf("cache sync interrupted: %w", ctx.Err())
+		}
 		return errors.New("timed out waiting for caches to sync - please ensure deployment tracker has the correct kubernetes permissions")
 	}
 	cancel()
