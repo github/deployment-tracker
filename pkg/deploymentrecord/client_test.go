@@ -1,8 +1,10 @@
 package deploymentrecord
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -592,6 +594,13 @@ func TestPostOneSendsCorrectRequest(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("Authorization = %s, want Bearer test-token", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal("unable to read request body")
+		}
+		if !bytes.Contains(body, []byte("\"return_records\":false")) {
+			t.Error("expected '\"return_records\":false' in the request body")
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
