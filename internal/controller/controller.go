@@ -328,9 +328,9 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 
 	// Wait for the caches to be synced
 	slog.Info("Waiting for informer caches to sync")
-	informerSyncCxt, cancel := context.WithTimeout(ctx, c.informerSyncTimeout)
+	informerSyncCtx, cancel := context.WithTimeout(ctx, c.informerSyncTimeout)
 
-	if !cache.WaitForCacheSync(informerSyncCxt.Done(),
+	if !cache.WaitForCacheSync(informerSyncCtx.Done(),
 		c.podInformer.HasSynced,
 		c.deploymentInformer.HasSynced,
 		c.daemonSetInformer.HasSynced,

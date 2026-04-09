@@ -541,11 +541,13 @@ func TestIsTerminalPhase(t *testing.T) {
 func TestRun_InformerSyncTimeout(t *testing.T) {
 	t.Parallel()
 	fakeClient := fake.NewSimpleClientset()
+	blocker := make(chan struct{})
 	fakeClient.PrependReactor("list", "*", func(_ k8stesting.Action) (bool, runtime.Object, error) {
-		// Block until the test context is cancelled.
-		<-make(chan struct{})
+		// Block until the test completes.
+		<-blocker
 		return true, nil, nil
 	})
+	defer close(blocker)
 
 	factory := createInformerFactory(fakeClient, "", "")
 
