@@ -65,6 +65,7 @@ Two modes of authentication are supported:
 
 | Variable               | Description                                | Default                                              |
 |------------------------|--------------------------------------------|------------------------------------------------------|
+| `LOG_LEVEL`            | log level: DEBUG, INFO, WARN, ERROR        | `INFO`                                               |
 | `ORG`                  | GitHub organization name                   | (required)                                           |
 | `BASE_URL`             | API base URL                               | `api.github.com`                                     |
 | `DN_TEMPLATE`          | Deployment name template                   | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
