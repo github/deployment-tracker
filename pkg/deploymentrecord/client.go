@@ -189,7 +189,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
 
-	body, err := json.Marshal(record)
+	body, err := buildRequestBody(record)
 	if err != nil {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
@@ -396,6 +396,18 @@ func parseRateLimitDelay(resp *http.Response) time.Duration {
 	default:
 		return time.Minute
 	}
+}
+
+// buildRequestBody adds return_records=false to a deployment record request body
+// which results in a minimal response payload.
+func buildRequestBody(record *DeploymentRecord) ([]byte, error) {
+	return json.Marshal(struct {
+		DeploymentRecord
+		ReturnRecords bool `json:"return_records"`
+	}{
+		DeploymentRecord: *record,
+		ReturnRecords:    false,
+	})
 }
 
 func waitForBackoff(ctx context.Context, attempt int) error {
