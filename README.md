@@ -193,7 +193,7 @@ The metrics exposed beyond the default Prometheus metrics are:
   record uploads.
 * `deptracker_post_record_rate_limited`: the number of post attempts
   that were rate limited.
-* `deptracker_post_record_no_attestation`: the number of attempts
+* `deptracker_post_record_unknown_artifact`: the number of attempts
   that resulted in no matching attestation for the container digest
   (404 "no artifacts found" responses).
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
