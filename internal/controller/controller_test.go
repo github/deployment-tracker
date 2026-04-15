@@ -44,11 +44,11 @@ func (m *mockPoster) getCalls() int {
 // mockResolver is a test double for the workloadResolver interface.
 type mockResolver struct{}
 
-func (m *mockResolver) Resolve(pod *corev1.Pod) workload.Identity {
+func (*mockResolver) Resolve(_ *corev1.Pod) workload.Identity {
 	return workload.Identity{}
 }
 
-func (m *mockResolver) IsActive(_ string, _ workload.Identity) bool {
+func (*mockResolver) IsActive(_ string, _ workload.Identity) bool {
 	return false
 }
 

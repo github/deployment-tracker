@@ -74,14 +74,29 @@ func (r *Resolver) Resolve(pod *corev1.Pod) Identity {
 func (r *Resolver) IsActive(namespace string, ref Identity) bool {
 	switch ref.Kind {
 	case "Deployment":
+		if r.deploymentLister == nil {
+			return false
+		}
 		return r.deploymentExists(namespace, ref.Name)
 	case "DaemonSet":
+		if r.daemonSetLister == nil {
+			return false
+		}
 		return r.daemonSetExists(namespace, ref.Name)
 	case "StatefulSet":
+		if r.statefulSetLister == nil {
+			return false
+		}
 		return r.statefulSetExists(namespace, ref.Name)
 	case "CronJob":
+		if r.cronJobLister == nil {
+			return false
+		}
 		return r.cronJobExists(namespace, ref.Name)
 	case "Job":
+		if r.jobLister == nil {
+			return false
+		}
 		return r.jobExists(namespace, ref.Name)
 	default:
 		return false

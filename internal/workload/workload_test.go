@@ -317,20 +317,21 @@ func TestIsTerminalPhase(t *testing.T) {
 func TestIsNumeric(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		name     string
 		input    string
 		expected bool
 	}{
-		{"28485120", true},
-		{"0", true},
-		{"123456789", true},
-		{"", false},
-		{"abc", false},
-		{"123abc", false},
-		{"12-34", false},
+		{"digits", "28485120", true},
+		{"zero", "0", true},
+		{"long digits", "123456789", true},
+		{"empty string", "", false},
+		{"letters", "abc", false},
+		{"mixed", "123abc", false},
+		{"hyphenated", "12-34", false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tt.expected, isNumeric(tt.input))
 		})
