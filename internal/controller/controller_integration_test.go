@@ -21,7 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	k8smetadata "k8s.io/client-go/metadata"
-	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -120,15 +119,11 @@ func setup(t *testing.T, onlyNamespace string, excludeNamespaces string) (*kuber
 	go func() {
 		_ = ctrl.Run(ctx, 1)
 	}()
-	if !cache.WaitForCacheSync(ctx.Done(),
-		ctrl.podInformer.HasSynced,
-		ctrl.deploymentInformer.HasSynced,
-		ctrl.daemonSetInformer.HasSynced,
-		ctrl.statefulSetInformer.HasSynced,
-		ctrl.jobInformer.HasSynced,
-		ctrl.cronJobInformer.HasSynced,
-	) {
-		t.Fatal("timed out waiting for informer cache to sync")
+	syncResults := ctrl.informerFactory.WaitForCacheSync(ctx.Done())
+	for _, synced := range syncResults {
+		if !synced {
+			t.Fatal("timed out waiting for informer cache to sync")
+		}
 	}
 
 	return clientset, mockDeploymentRecordPoster
