@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,7 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	amcache "k8s.io/apimachinery/pkg/util/cache"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/util/workqueue"
 )
 
 // mockPoster records all PostOne calls and returns a configurable error.
@@ -531,5 +536,53 @@ func TestIsTerminalPhase(t *testing.T) {
 			}
 			assert.Equal(t, tt.expected, isTerminalPhase(pod))
 		})
+	}
+}
+
+func TestRun_InformerSyncTimeout(t *testing.T) {
+	t.Parallel()
+	fakeClient := fake.NewSimpleClientset()
+	blocker := make(chan struct{})
+	fakeClient.PrependReactor("list", "*", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		// Block until the test completes.
+		<-blocker
+		return true, nil, errors.New("fail")
+	})
+	defer close(blocker)
+
+	factory := createInformerFactory(fakeClient, "", "")
+
+	ctrl := &Controller{
+		clientset:           fakeClient,
+		podInformer:         factory.Core().V1().Pods().Informer(),
+		deploymentInformer:  factory.Apps().V1().Deployments().Informer(),
+		daemonSetInformer:   factory.Apps().V1().DaemonSets().Informer(),
+		statefulSetInformer: factory.Apps().V1().StatefulSets().Informer(),
+		jobInformer:         factory.Batch().V1().Jobs().Informer(),
+		cronJobInformer:     factory.Batch().V1().CronJobs().Informer(),
+		workqueue: workqueue.NewTypedRateLimitingQueue(
+			workqueue.DefaultTypedControllerRateLimiter[PodEvent](),
+		),
+		apiClient:           &mockPoster{},
+		cfg:                 &Config{},
+		observedDeployments: amcache.NewExpiring(),
+		unknownArtifacts:    amcache.NewExpiring(),
+		informerSyncTimeout: 2 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ctrl.Run(ctx, 1)
+	}()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "timed out waiting for caches to sync")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5 seconds — informer sync timeout was 2 seconds")
 	}
 }
