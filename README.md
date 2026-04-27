@@ -197,7 +197,7 @@ The metrics exposed beyond the default Prometheus metrics are:
   that resulted in no matching attestation for the container digest
   (404 "no artifacts found" responses) and an entry in the unknown
   artifact cache.
-* `deptracker_post_record_unknown_artifact_cache_hit`: the number of 
+* `deptracker_post_record_unknown_artifact_cache_hit`: the number of
   attempts to create new records prevented by the unknown artifact cache.
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
   attempts to upload the deployment record.
