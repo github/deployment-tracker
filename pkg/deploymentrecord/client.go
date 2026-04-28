@@ -265,7 +265,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		switch {
 		case resp.StatusCode == 404:
 			// No artifact found - do not retry
-			dtmetrics.PostDeploymentRecordNoAttestation.Inc()
+			dtmetrics.PostDeploymentRecordUnknownArtifact.Inc()
 			slog.Debug("no artifact attestation found, no record created",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,

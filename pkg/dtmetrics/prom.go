@@ -50,9 +50,9 @@ var (
 	)
 
 	//nolint: revive
-	PostDeploymentRecordNoAttestation = promauto.NewCounter(
+	PostDeploymentRecordUnknownArtifact = promauto.NewCounter(
 		prometheus.CounterOpts{
-			Name: "deptracker_post_record_no_attestation",
+			Name: "deptracker_post_record_unknown_artifact",
 			Help: "The total number of post attempts that resulted in no matching attestation for the container digest (404 'no artifacts found' responses)",
 		},
 	)

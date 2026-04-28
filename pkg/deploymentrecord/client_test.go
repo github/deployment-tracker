@@ -298,7 +298,7 @@ func testRecord() *DeploymentRecord {
 func allCounters() []prometheus.Counter {
 	return []prometheus.Counter{
 		dtmetrics.PostDeploymentRecordOk,
-		dtmetrics.PostDeploymentRecordNoAttestation,
+		dtmetrics.PostDeploymentRecordUnknownArtifact,
 		dtmetrics.PostDeploymentRecordRateLimited,
 		dtmetrics.PostDeploymentRecordSoftFail,
 		dtmetrics.PostDeploymentRecordHardFail,
@@ -308,19 +308,19 @@ func allCounters() []prometheus.Counter {
 
 func TestPostOne(t *testing.T) {
 	tests := []struct {
-		name              string
-		record            *DeploymentRecord
-		retries           int
-		handler           http.HandlerFunc
-		wantErr           bool
-		errType           any // expected error type for errors.As
-		errContain        string
-		wantOk            float64
-		wantNoAttestation float64
-		wantRateLimited   float64
-		wantSoftFail      float64
-		wantHardFail      float64
-		wantClientError   float64
+		name                string
+		record              *DeploymentRecord
+		retries             int
+		handler             http.HandlerFunc
+		wantErr             bool
+		errType             any // expected error type for errors.As
+		errContain          string
+		wantOk              float64
+		wantUnknownArtifact float64
+		wantRateLimited     float64
+		wantSoftFail        float64
+		wantHardFail        float64
+		wantClientError     float64
 	}{
 		{
 			name:   "success on 200",
@@ -354,10 +354,10 @@ func TestPostOne(t *testing.T) {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"message":"no artifacts found"}`))
 			},
-			wantErr:           true,
-			errType:           &NoArtifactError{},
-			errContain:        "sha256:abc123",
-			wantNoAttestation: 1,
+			wantErr:             true,
+			errType:             &NoArtifactError{},
+			errContain:          "sha256:abc123",
+			wantUnknownArtifact: 1,
 		},
 		{
 			name:   "400 returns ClientError",
@@ -555,7 +555,7 @@ func TestPostOne(t *testing.T) {
 			// Assert all metric deltas
 			wantDeltas := []float64{
 				tt.wantOk,
-				tt.wantNoAttestation,
+				tt.wantUnknownArtifact,
 				tt.wantRateLimited,
 				tt.wantSoftFail,
 				tt.wantHardFail,
@@ -563,7 +563,7 @@ func TestPostOne(t *testing.T) {
 			}
 			names := []string{
 				"PostDeploymentRecordOk",
-				"PostDeploymentRecordNoAttestation",
+				"PostDeploymentRecordUnknownArtifact",
 				"PostDeploymentRecordRateLimited",
 				"PostDeploymentRecordSoftFail",
 				"PostDeploymentRecordHardFail",

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,8 +66,13 @@ func main() {
 
 	// init logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile | log.LUTC)
-	opts := slog.HandlerOptions{Level: slog.LevelInfo}
+	logLevelStr := getEnvOrDefault("LOG_LEVEL", "INFO")
+	level, msg := parseLogLevel(logLevelStr)
+	opts := slog.HandlerOptions{Level: level}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &opts)))
+	if msg != "" {
+		slog.Warn(msg)
+	}
 
 	var ghAppPrivateKey []byte
 	if b64Key := os.Getenv("GH_APP_PRIVATE_KEY"); b64Key != "" {
@@ -219,4 +225,19 @@ func createK8sConfig(kubeconfig string) (*rest.Config, error) {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)
 	}
 	return clientcmd.BuildConfigFromFlags("", homeDir+"/.kube/config")
+}
+
+func parseLogLevel(logLevel string) (slog.Level, string) {
+	switch strings.ToUpper(logLevel) {
+	case "DEBUG":
+		return slog.LevelDebug, ""
+	case "INFO":
+		return slog.LevelInfo, ""
+	case "WARN":
+		return slog.LevelWarn, ""
+	case "ERROR":
+		return slog.LevelError, ""
+	default:
+		return slog.LevelInfo, fmt.Sprintf("%s is an unsupported log level (DEBUG, WARN, INFO, ERROR), using INFO...", logLevel)
+	}
 }

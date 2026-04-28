@@ -65,6 +65,7 @@ Two modes of authentication are supported:
 
 | Variable               | Description                                | Default                                              |
 |------------------------|--------------------------------------------|------------------------------------------------------|
+| `LOG_LEVEL`            | log level: DEBUG, INFO, WARN, ERROR        | `INFO`                                               |
 | `ORG`                  | GitHub organization name                   | (required)                                           |
 | `BASE_URL`             | API base URL                               | `api.github.com`                                     |
 | `DN_TEMPLATE`          | Deployment name template                   | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
@@ -192,9 +193,12 @@ The metrics exposed beyond the default Prometheus metrics are:
   record uploads.
 * `deptracker_post_record_rate_limited`: the number of post attempts
   that were rate limited.
-* `deptracker_post_record_no_attestation`: the number of attempts
+* `deptracker_post_record_unknown_artifact`: the number of attempts
   that resulted in no matching attestation for the container digest
-  (404 "no artifacts found" responses).
+  (404 "no artifacts found" responses) and an entry in the unknown
+  artifact cache.
+* `deptracker_post_record_unknown_artifact_cache_hit`: the number of
+  attempts to create new records prevented by the unknown artifact cache.
 * `deptracker_post_record_soft_fail`: the number of recoverable failed
   attempts to upload the deployment record.
 * `deptracker_post_record_hard_fail`: the number of failures to
