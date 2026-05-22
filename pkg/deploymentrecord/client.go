@@ -196,7 +196,16 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 	respBody, statusCode, lastErr := c.PostWithRetry(ctx, url, body)
 
+	var clientErr *ClientError
 	switch {
+	case errors.As(lastErr, &clientErr):
+		dtmetrics.PostDeploymentRecordClientError.Inc()
+		slog.Warn("client error, aborting",
+			"status_code", statusCode,
+			"url", url,
+			"resp_msg", string(respBody),
+		)
+		return fmt.Errorf("client error: %w", lastErr)
 	case statusCode >= 200 && statusCode < 300:
 		dtmetrics.PostDeploymentRecordOk.Inc()
 		return nil
@@ -237,11 +246,21 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 
 	respBody, statusCode, lastErr := c.PostWithRetry(ctx, url, body)
 
+	var clientErr *ClientError
 	switch {
+	case errors.As(lastErr, &clientErr):
+		dtmetrics.PostDeploymentRecordClientError.Inc()
+		slog.Warn("client error, aborting",
+			"status_code", statusCode,
+			"url", url,
+			"resp_msg", string(respBody),
+		)
+		return nil, fmt.Errorf("client error: %w", lastErr)
 	case statusCode >= 200 && statusCode < 300:
 		dtmetrics.PostDeploymentRecordOk.Inc()
 		return respBody, nil
 	case statusCode == 404:
+		dtmetrics.PostDeploymentRecordHardFail.Inc()
 		return nil, fmt.Errorf("cluster endpoint not found")
 	default:
 		dtmetrics.PostDeploymentRecordHardFail.Inc()
@@ -317,7 +336,7 @@ func (c *Client) PostWithRetry(ctx context.Context, url string, body []byte) ([]
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
 			return respBody, resp.StatusCode, nil
 		case resp.StatusCode == 404:
-			// No artifact found - do not retry
+			// Not found - do not retry
 			return respBody, resp.StatusCode, nil
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
 			// Check headers that indicate rate limiting
@@ -338,13 +357,6 @@ func (c *Client) PostWithRetry(ctx context.Context, url string, body []byte) ([]
 				continue
 			}
 			// Don't retry non rate limiting client errors
-			dtmetrics.PostDeploymentRecordClientError.Inc()
-			slog.Warn("client error, aborting",
-				"attempt", attempt,
-				"status_code", resp.StatusCode,
-				"url", url,
-				"resp_msg", string(respBody),
-			)
 			return nil, resp.StatusCode, &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
 		default:
 			// Retry with backoff

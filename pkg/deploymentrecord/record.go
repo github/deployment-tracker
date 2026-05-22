@@ -30,14 +30,6 @@ var validRuntimeRisks = map[RuntimeRisk]bool{
 	SensitiveData:    true,
 }
 
-// DeploymentRecord represents a deployment event record.
-type DeploymentRecord struct {
-	DeploymentRecordBase
-	LogicalEnvironment  string `json:"logical_environment"`
-	PhysicalEnvironment string `json:"physical_environment"`
-	Cluster             string `json:"cluster"`
-}
-
 // DeploymentRecordBase represents a deployment record for the deployment record cluster endpoint.
 type DeploymentRecordBase struct {
 	Name           string            `json:"name"`
@@ -49,11 +41,39 @@ type DeploymentRecordBase struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 }
 
+// DeploymentRecord represents a deployment event record.
+type DeploymentRecord struct {
+	DeploymentRecordBase
+	LogicalEnvironment  string `json:"logical_environment"`
+	PhysicalEnvironment string `json:"physical_environment"`
+	Cluster             string `json:"cluster"`
+}
+
+// DeploymentRecordResp represents the response of a created deployment record from the
+// deployment record cluster endpoint.
+type DeploymentRecordResp struct {
+	DeploymentRecord
+	Created       string `json:"created"`
+	UpdatedAt     string `json:"updated_at"`
+	AttestationId int    `json:"attestation_id"`
+}
+
+type DeploymentRecordErrorResp struct {
+	DeploymentRecord
+	Cause string `json:"cause"`
+}
+
 // DeploymentRecords represents the post body for the deployment record cluster endpoint.
 type DeploymentRecords struct {
 	LogicalEnvironment  string                 `json:"logical_environment"`
 	PhysicalEnvironment string                 `json:"physical_environment"`
 	Deployments         []DeploymentRecordBase `json:"deployments"`
+}
+
+type DeploymentRecordsClusterResp struct {
+	TotalCount        int                          `json:"total_count"`
+	DeploymentRecords []*DeploymentRecordResp      `json:"deployment_records"`
+	Errors            []*DeploymentRecordErrorResp `json:"errors,omitempty"`
 }
 
 // NewDeploymentRecord creates a new DeploymentRecord with the given status.

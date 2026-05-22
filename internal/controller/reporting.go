@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -158,6 +159,10 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 			}
 		}
 	}
+	if len(syncRecords) == 0 {
+		slog.Info("No sync records to post")
+		return nil
+	}
 
 	respBody, err := c.apiClient.PostCluster(ctx, syncRecords, c.cfg.Cluster)
 	if err != nil {
@@ -167,9 +172,38 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 		)
 		return fmt.Errorf("failed to post sync cluster records: %w", err)
 	}
-	slog.Info("Successfully posted sync cluster records", "body", string(respBody))
+	var deploymentRecords deploymentrecord.DeploymentRecordsClusterResp
+	err = json.Unmarshal(respBody, &deploymentRecords)
+	if err != nil {
+		slog.Error("Failed to unmarshall response",
+			"error", err,
+			"record_count", len(syncRecords),
+		)
+		return nil
+	}
+	slog.Info("Successfully posted sync cluster records",
+		"created", len(deploymentRecords.DeploymentRecords),
+		"errors", len(deploymentRecords.Errors),
+	)
 
+	c.fillCaches(deploymentRecords)
 	return nil
+}
+
+func (c *Controller) fillCaches(deploymentRecords deploymentrecord.DeploymentRecordsClusterResp) {
+	slog.Info("Filling caches after posting sync cluster records")
+	// Fill observedDeployments cache with successful digests
+	for _, r := range deploymentRecords.DeploymentRecords {
+		cacheKey := getCacheKey(EventCreated, r.DeploymentName, r.Digest)
+		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
+	}
+
+	// Fill unknownArtifacts cache with unknown digests
+	for _, r := range deploymentRecords.Errors {
+		if r.Cause == "not_found" {
+			c.unknownArtifacts.Set(r.Digest, true, unknownArtifactTTL)
+		}
+	}
 }
 
 // recordContainer records a single container's deployment info.
