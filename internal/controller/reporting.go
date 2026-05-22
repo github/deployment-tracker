@@ -14,7 +14,6 @@ import (
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/github/deployment-tracker/pkg/dtmetrics"
 	"github.com/github/deployment-tracker/pkg/ociutil"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -92,13 +91,13 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 		return nil
 	}
 
-	var lastErr error
-
 	// Gather aggregate metadata for adds/updates
 	var aggPodMetadata *metadata.AggregatePodMetadata
 	if event.EventType != EventDeleted {
 		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
 	}
+
+	var lastErr error
 
 	// Record info for each container in the pod
 	for _, container := range pod.Spec.Containers {
@@ -117,99 +116,105 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	return lastErr
 }
 
-// recordContainer records a single container's deployment info.
-func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) error {
-	var cacheKey string
+func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []interface{}) {
+	syncRecords := []*deploymentrecord.DeploymentRecord{}
+	for _, p := range syncClusterPods {
+		pod, ok := p.(*corev1.Pod)
+		if !ok {
+			slog.Error("Invalid object type in sync cluster pod list")
+			continue
+		}
 
-	status := deploymentrecord.StatusDeployed
-	if eventType == EventDeleted {
-		status = deploymentrecord.StatusDecommissioned
+		// Resolve the workload name for the deployment record.
+		wl := c.workloadResolver.Resolve(pod)
+		if wl.Name == "" {
+			slog.Debug("Could not resolve workload name for sync pod, skipping",
+				"namespace", pod.Namespace,
+				"pod", pod.Name,
+			)
+			continue
+		}
+		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
+			continue
+		}
+
+		// Gather aggregate metadata for adds/updates
+		var aggPodMetadata *metadata.AggregatePodMetadata
+		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
+
+		// Record info for each container in the pod
+		for _, container := range pod.Spec.Containers {
+			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
+			if record != nil {
+				syncRecords = append(syncRecords, record)
+			}
+		}
+
+		// Also record init containers
+		for _, container := range pod.Spec.InitContainers {
+			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
+			if record != nil {
+				syncRecords = append(syncRecords, record)
+			}
+		}
 	}
 
-	dn := getARDeploymentName(pod, container, c.cfg.Template, workloadName)
-	digest := getContainerDigest(pod, container.Name)
+	slog.Info("Sync Records: ", "len", len(syncRecords), "content", syncRecords)
+}
 
-	if dn == "" || digest == "" {
-		slog.Debug("Skipping container: missing deployment name or digest",
-			"namespace", pod.Namespace,
-			"pod", pod.Name,
-			"container", container.Name,
-			"deployment_name", dn,
-			"has_digest", digest != "",
-		)
+// recordContainer records a single container's deployment info.
+func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) error {
+	// Create deployment record
+	record := c.buildRecord(pod, container, eventType, workloadName, aggPodMetadata)
+	if record == nil {
+		slog.Debug("Unable to build record for container, skipping",
+			"deployment_name", getARDeploymentName(pod, container, c.cfg.Template, workloadName))
 		return nil
 	}
 
 	// Check if we've already recorded this deployment
-	switch status {
+	var cacheKey string
+	switch record.Status {
 	case deploymentrecord.StatusDeployed:
-		cacheKey = getCacheKey(EventCreated, dn, digest)
+		cacheKey = getCacheKey(EventCreated, record.DeploymentName, record.Digest)
 		if _, exists := c.observedDeployments.Get(cacheKey); exists {
 			slog.Debug("Deployment already observed, skipping post",
-				"deployment_name", dn,
-				"digest", digest,
+				"deployment_name", record.DeploymentName,
+				"digest", record.Digest,
 			)
 			return nil
 		}
 	case deploymentrecord.StatusDecommissioned:
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		cacheKey = getCacheKey(EventDeleted, record.DeploymentName, record.Digest)
 		if _, exists := c.observedDeployments.Get(cacheKey); exists {
 			slog.Debug("Deployment already deleted, skipping post",
-				"deployment_name", dn,
-				"digest", digest,
+				"deployment_name", record.DeploymentName,
+				"digest", record.Digest,
 			)
 			return nil
 		}
 	default:
-		return fmt.Errorf("invalid status: %s", status)
+		return fmt.Errorf("invalid status: %s", record.Status)
 	}
 
 	// Check if this artifact was previously unknown (404 from the API)
-	if _, exists := c.unknownArtifacts.Get(digest); exists {
+	if _, exists := c.unknownArtifacts.Get(record.Digest); exists {
 		dtmetrics.PostDeploymentRecordUnknownArtifactCacheHit.Inc()
 		slog.Debug("Artifact previously returned 404, skipping post",
-			"deployment_name", dn,
-			"digest", digest,
+			"deployment_name", record.DeploymentName,
+			"digest", record.Digest,
 		)
 		return nil
 	}
-
-	// Extract image name and tag
-	imageName, version := ociutil.ExtractName(container.Image)
-
-	// Format runtime risks and tags
-	var runtimeRisks []deploymentrecord.RuntimeRisk
-	var tags map[string]string
-	if aggPodMetadata != nil {
-		for risk := range aggPodMetadata.RuntimeRisks {
-			runtimeRisks = append(runtimeRisks, risk)
-		}
-		slices.Sort(runtimeRisks)
-		tags = aggPodMetadata.Tags
-	}
-
-	// Create deployment record
-	record := deploymentrecord.NewDeploymentRecord(
-		imageName,
-		digest,
-		version,
-		c.cfg.LogicalEnvironment,
-		c.cfg.PhysicalEnvironment,
-		c.cfg.Cluster,
-		status,
-		dn,
-		runtimeRisks,
-		tags,
-	)
 
 	if err := c.apiClient.PostOne(ctx, record); err != nil {
 		// Return if no artifact is found and cache the digest
 		var noArtifactErr *deploymentrecord.NoArtifactError
 		if errors.As(err, &noArtifactErr) {
-			c.unknownArtifacts.Set(digest, true, unknownArtifactTTL)
+			c.unknownArtifacts.Set(record.Digest, true, unknownArtifactTTL)
 			slog.Info("No artifact found, digest cached as unknown",
-				"deployment_name", dn,
-				"digest", digest,
+				"deployment_name", record.DeploymentName,
+				"digest", record.Digest,
 			)
 			return nil
 		}
@@ -250,24 +255,73 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	)
 
 	// Update cache after successful post
-	switch status {
+	switch record.Status {
 	case deploymentrecord.StatusDeployed:
-		cacheKey = getCacheKey(EventCreated, dn, digest)
+		cacheKey = getCacheKey(EventCreated, record.DeploymentName, record.Digest)
 		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
 		// If there was a previous delete event, remove that
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		cacheKey = getCacheKey(EventDeleted, record.DeploymentName, record.Digest)
 		c.observedDeployments.Delete(cacheKey)
 	case deploymentrecord.StatusDecommissioned:
-		cacheKey = getCacheKey(EventDeleted, dn, digest)
+		cacheKey = getCacheKey(EventDeleted, record.DeploymentName, record.Digest)
 		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
 		// If there was a previous create event, remove that
-		cacheKey = getCacheKey(EventCreated, dn, digest)
+		cacheKey = getCacheKey(EventCreated, record.DeploymentName, record.Digest)
 		c.observedDeployments.Delete(cacheKey)
 	default:
-		return fmt.Errorf("invalid status: %s", status)
+		return fmt.Errorf("invalid status: %s", record.Status)
 	}
 
 	return nil
+}
+
+func (c *Controller) buildRecord(pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) *deploymentrecord.DeploymentRecord {
+	dn := getARDeploymentName(pod, container, c.cfg.Template, workloadName)
+	digest := getContainerDigest(pod, container.Name)
+
+	if dn == "" || digest == "" {
+		slog.Debug("Skipping container: missing deployment name or digest",
+			"namespace", pod.Namespace,
+			"pod", pod.Name,
+			"container", container.Name,
+			"deployment_name", dn,
+			"has_digest", digest != "",
+		)
+		return nil
+	}
+
+	status := deploymentrecord.StatusDeployed
+	if eventType == EventDeleted {
+		status = deploymentrecord.StatusDecommissioned
+	}
+
+	// Extract image name and tag
+	imageName, version := ociutil.ExtractName(container.Image)
+
+	// Format runtime risks and tags
+	var runtimeRisks []deploymentrecord.RuntimeRisk
+	var tags map[string]string
+	if aggPodMetadata != nil {
+		for risk := range aggPodMetadata.RuntimeRisks {
+			runtimeRisks = append(runtimeRisks, risk)
+		}
+		slices.Sort(runtimeRisks)
+		tags = aggPodMetadata.Tags
+	}
+
+	// Create deployment record
+	return deploymentrecord.NewDeploymentRecord(
+		imageName,
+		digest,
+		version,
+		c.cfg.LogicalEnvironment,
+		c.cfg.PhysicalEnvironment,
+		c.cfg.Cluster,
+		status,
+		dn,
+		runtimeRisks,
+		tags,
+	)
 }
 
 func getCacheKey(ev, dn, digest string) string {
