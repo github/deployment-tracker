@@ -37,6 +37,10 @@ func (m *mockRecordPoster) PostOne(_ context.Context, record *deploymentrecord.D
 	return m.err
 }
 
+func (m *mockRecordPoster) PostCluster(_ context.Context, _ []*deploymentrecord.DeploymentRecord, _ string) ([]byte, error) {
+	return nil, nil
+}
+
 // Helper that allows tests to read captured records safely.
 func (m *mockRecordPoster) getRecords() []*deploymentrecord.DeploymentRecord {
 	m.mu.Lock()

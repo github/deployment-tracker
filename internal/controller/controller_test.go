@@ -35,6 +35,10 @@ func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.DeploymentRe
 	return m.lastErr
 }
 
+func (m *mockPoster) PostCluster(_ context.Context, _ []*deploymentrecord.DeploymentRecord, _ string) ([]byte, error) {
+	return nil, nil
+}
+
 func (m *mockPoster) getCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

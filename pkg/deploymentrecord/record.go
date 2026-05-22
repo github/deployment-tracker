@@ -32,16 +32,28 @@ var validRuntimeRisks = map[RuntimeRisk]bool{
 
 // DeploymentRecord represents a deployment event record.
 type DeploymentRecord struct {
-	Name                string            `json:"name"`
-	Digest              string            `json:"digest"`
-	Version             string            `json:"version,omitempty"`
-	LogicalEnvironment  string            `json:"logical_environment"`
-	PhysicalEnvironment string            `json:"physical_environment"`
-	Cluster             string            `json:"cluster"`
-	Status              string            `json:"status"`
-	DeploymentName      string            `json:"deployment_name"`
-	RuntimeRisks        []RuntimeRisk     `json:"runtime_risks,omitempty"`
-	Tags                map[string]string `json:"tags,omitempty"`
+	DeploymentRecordBase
+	LogicalEnvironment  string `json:"logical_environment"`
+	PhysicalEnvironment string `json:"physical_environment"`
+	Cluster             string `json:"cluster"`
+}
+
+// DeploymentRecordBase represents a deployment record for the deployment record cluster endpoint.
+type DeploymentRecordBase struct {
+	Name           string            `json:"name"`
+	Digest         string            `json:"digest"`
+	Version        string            `json:"version,omitempty"`
+	Status         string            `json:"status"`
+	DeploymentName string            `json:"deployment_name"`
+	RuntimeRisks   []RuntimeRisk     `json:"runtime_risks,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
+}
+
+// DeploymentRecords represents the post body for the deployment record cluster endpoint.
+type DeploymentRecords struct {
+	LogicalEnvironment  string                 `json:"logical_environment"`
+	PhysicalEnvironment string                 `json:"physical_environment"`
+	Deployments         []DeploymentRecordBase `json:"deployments"`
 }
 
 // NewDeploymentRecord creates a new DeploymentRecord with the given status.
@@ -56,16 +68,18 @@ func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
 	}
 
 	return &DeploymentRecord{
-		Name:                name,
-		Digest:              digest,
-		Version:             version,
 		LogicalEnvironment:  logicalEnv,
 		PhysicalEnvironment: physicalEnv,
 		Cluster:             cluster,
-		Status:              status,
-		DeploymentName:      deploymentName,
-		RuntimeRisks:        runtimeRisks,
-		Tags:                tags,
+		DeploymentRecordBase: DeploymentRecordBase{
+			Name:           name,
+			Digest:         digest,
+			Version:        version,
+			Status:         status,
+			DeploymentName: deploymentName,
+			RuntimeRisks:   runtimeRisks,
+			Tags:           tags,
+		},
 	}
 }
 

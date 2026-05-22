@@ -116,12 +116,16 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	return lastErr
 }
 
-func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []interface{}) {
+func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []interface{}) error {
 	syncRecords := []*deploymentrecord.DeploymentRecord{}
 	for _, p := range syncClusterPods {
 		pod, ok := p.(*corev1.Pod)
 		if !ok {
 			slog.Error("Invalid object type in sync cluster pod list")
+			continue
+		}
+
+		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
 			continue
 		}
 
@@ -134,13 +138,9 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 			)
 			continue
 		}
-		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
-			continue
-		}
 
 		// Gather aggregate metadata for adds/updates
-		var aggPodMetadata *metadata.AggregatePodMetadata
-		aggPodMetadata = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
+		aggPodMetadata := c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
 
 		// Record info for each container in the pod
 		for _, container := range pod.Spec.Containers {
@@ -159,7 +159,17 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 		}
 	}
 
-	slog.Info("Sync Records: ", "len", len(syncRecords), "content", syncRecords)
+	respBody, err := c.apiClient.PostCluster(ctx, syncRecords, c.cfg.Cluster)
+	if err != nil {
+		slog.Error("Failed to post sync cluster records",
+			"error", err,
+			"record_count", len(syncRecords),
+		)
+		return fmt.Errorf("failed to post sync cluster records: %w", err)
+	}
+	slog.Info("Successfully posted sync cluster records", "body", string(respBody))
+
+	return nil
 }
 
 // recordContainer records a single container's deployment info.

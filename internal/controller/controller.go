@@ -49,6 +49,7 @@ type ttlCache interface {
 
 type deploymentRecordPoster interface {
 	PostOne(ctx context.Context, record *deploymentrecord.DeploymentRecord) error
+	PostCluster(ctx context.Context, records []*deploymentrecord.DeploymentRecord, cluster string) ([]byte, error)
 }
 
 type podMetadataAggregator interface {
@@ -324,7 +325,10 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	}
 	c.syncing.Store(false)
 	syncClusterPods := c.podInformer.GetIndexer().List()
-	c.processSyncEvents(ctx, syncClusterPods)
+	err := c.processSyncEvents(ctx, syncClusterPods)
+	if err != nil {
+		return fmt.Errorf("sync events failed: %w", err)
+	}
 
 	slog.Info("Starting workers",
 		"count", workers,
