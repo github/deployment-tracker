@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/github/deployment-tracker/internal/metadata"
 	"github.com/github/deployment-tracker/internal/workload"
 	"github.com/github/deployment-tracker/pkg/deploymentrecord"
 	"github.com/stretchr/testify/assert"
@@ -23,9 +24,13 @@ import (
 
 // mockPoster records all PostOne calls and returns a configurable error.
 type mockPoster struct {
-	mu      sync.Mutex
-	calls   int
-	lastErr error
+	mu                 sync.Mutex
+	calls              int
+	clusterCalls       int
+	clusterRecordCount int
+	lastErr            error
+	clusterResp        []byte
+	clusterErr         error
 }
 
 func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.DeploymentRecord) error {
@@ -35,25 +40,44 @@ func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.DeploymentRe
 	return m.lastErr
 }
 
-func (m *mockPoster) PostCluster(_ context.Context, _ []*deploymentrecord.DeploymentRecord, _ string) ([]byte, error) {
-	return nil, nil
+func (m *mockPoster) PostCluster(_ context.Context, records []*deploymentrecord.DeploymentRecord, _ string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clusterCalls++
+	m.clusterRecordCount = len(records)
+	return m.clusterResp, m.clusterErr
 }
 
-func (m *mockPoster) getCalls() int {
+func (m *mockPoster) getPostOneCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.calls
 }
 
-// mockResolver is a test double for the workloadResolver interface.
-type mockResolver struct{}
+func (m *mockPoster) getPostClusterCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.clusterCalls
+}
 
-func (*mockResolver) Resolve(_ *corev1.Pod) workload.Identity {
-	return workload.Identity{}
+// mockResolver is a test double for the workloadResolver interface.
+type mockResolver struct {
+	name string
+}
+
+func (m *mockResolver) Resolve(_ *corev1.Pod) workload.Identity {
+	return workload.Identity{Name: m.name}
 }
 
 func (*mockResolver) IsActive(_ string, _ workload.Identity) bool {
 	return false
+}
+
+// mockMetadataAggregator is a test double for the podMetadataAggregator interface.
+type mockMetadataAggregator struct{}
+
+func (*mockMetadataAggregator) BuildAggregatePodMetadata(_ context.Context, _ *metav1.PartialObjectMetadata) *metadata.AggregatePodMetadata {
+	return nil
 }
 
 // newTestController creates a minimal Controller suitable for unit-testing
@@ -68,6 +92,7 @@ func newTestController(poster *mockPoster) *Controller {
 			Cluster:             "test",
 		},
 		workloadResolver:    &mockResolver{},
+		metadataAggregator:  &mockMetadataAggregator{},
 		observedDeployments: amcache.NewExpiring(),
 		unknownArtifacts:    amcache.NewExpiring(),
 	}
