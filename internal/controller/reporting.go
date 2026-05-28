@@ -118,54 +118,21 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 }
 
 func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []interface{}) error {
-	syncRecords := []*deploymentrecord.DeploymentRecord{}
-	for _, p := range syncClusterPods {
-		pod, ok := p.(*corev1.Pod)
-		if !ok {
-			slog.Error("Invalid object type in sync cluster pod list")
-			continue
-		}
-
-		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
-			continue
-		}
-
-		// Resolve the workload name for the deployment record.
-		wl := c.workloadResolver.Resolve(pod)
-		if wl.Name == "" {
-			slog.Debug("Could not resolve workload name for sync pod, skipping",
-				"namespace", pod.Namespace,
-				"pod", pod.Name,
-			)
-			continue
-		}
-
-		// Gather aggregate metadata for adds/updates
-		aggPodMetadata := c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
-
-		// Record info for each container in the pod
-		for _, container := range pod.Spec.Containers {
-			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
-			if record != nil {
-				syncRecords = append(syncRecords, record)
-			}
-		}
-
-		// Also record init containers
-		for _, container := range pod.Spec.InitContainers {
-			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
-			if record != nil {
-				syncRecords = append(syncRecords, record)
-			}
-		}
-	}
+	syncRecords := c.makeSyncRecords(ctx, syncClusterPods)
 	if len(syncRecords) == 0 {
 		slog.Info("No sync records to post")
 		return nil
 	}
 
 	respBody, err := c.apiClient.PostCluster(ctx, syncRecords, c.cfg.Cluster)
+	var clusterNoRepositoriesError *deploymentrecord.ClusterNoRepositoriesError
 	if err != nil {
+		if errors.As(err, &clusterNoRepositoriesError) {
+			slog.Info("Cluster sync found no creatable records",
+				"org", c.cfg.Organization,
+			)
+			return nil
+		}
 		slog.Error("Failed to post sync cluster records",
 			"error", err,
 			"record_count", len(syncRecords),
@@ -188,6 +155,68 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 
 	c.fillCaches(deploymentRecords)
 	return nil
+}
+
+func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []interface{}) []*deploymentrecord.DeploymentRecord {
+	seenSyncRecords := make(map[string]bool)
+	var syncRecords []*deploymentrecord.DeploymentRecord
+	for _, p := range syncClusterPods {
+		pod, ok := p.(*corev1.Pod)
+		if !ok {
+			slog.Error("Invalid object type in sync cluster pod list")
+			continue
+		}
+
+		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
+			continue
+		}
+
+		// Resolve the workload name for the deployment record.
+		wl := c.workloadResolver.Resolve(pod)
+		if wl.Name == "" {
+			slog.Debug("Could not resolve workload name for sync pod, skipping",
+				"namespace", pod.Namespace,
+				"pod", pod.Name,
+			)
+			continue
+		}
+
+		allContainers := make([]corev1.Container, 0, len(pod.Spec.Containers)+len(pod.Spec.InitContainers))
+		allContainers = append(allContainers, pod.Spec.Containers...)
+		allContainers = append(allContainers, pod.Spec.InitContainers...)
+
+		// Filter out containers already in syncRecords
+		var newContainers []corev1.Container
+		for _, container := range allContainers {
+			dn := getARDeploymentName(pod, container, c.cfg.Template, wl.Name)
+			digest := getContainerDigest(pod, container.Name)
+			if dn == "" || digest == "" {
+				continue
+			}
+			key := getCacheKey(EventCreated, dn, digest)
+			if seenSyncRecords[key] {
+				continue
+			}
+			seenSyncRecords[key] = true
+			newContainers = append(newContainers, container)
+		}
+
+		if len(newContainers) == 0 {
+			continue
+		}
+
+		// Only gather aggregate metadata if there are new containers
+		aggPodMetadata := c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
+
+		for _, container := range newContainers {
+			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
+			if record != nil {
+				syncRecords = append(syncRecords, record)
+			}
+		}
+	}
+
+	return syncRecords
 }
 
 func (c *Controller) fillCaches(deploymentRecords deploymentrecord.DeploymentRecordsClusterResp) {

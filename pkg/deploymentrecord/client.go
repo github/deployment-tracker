@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -164,6 +165,18 @@ func (c *ClientError) Unwrap() error {
 	return c.err
 }
 
+type ClusterNoRepositoriesError struct {
+	err error
+}
+
+func (c *ClusterNoRepositoriesError) Error() string {
+	return fmt.Sprintf("cluster_no_repositories_error: %s", c.err.Error())
+}
+
+func (c *ClusterNoRepositoriesError) Unwrap() error {
+	return c.err
+}
+
 // NoArtifactError represents a 404 client response whose body indicates "no artifacts found".
 type NoArtifactError struct {
 	err error
@@ -194,7 +207,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.PostWithRetry(ctx, url, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, url, body)
 
 	var clientErr *ClientError
 	switch {
@@ -237,14 +250,14 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, cluster)
+	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
 
 	body, err := buildClusterRequestBody(records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal records: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.PostWithRetry(ctx, url, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, url, body)
 
 	var clientErr *ClientError
 	switch {
@@ -260,8 +273,8 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		dtmetrics.PostDeploymentRecordOk.Inc()
 		return respBody, nil
 	case statusCode == 404:
-		dtmetrics.PostDeploymentRecordHardFail.Inc()
-		return nil, fmt.Errorf("cluster endpoint not found")
+		dtmetrics.PostDeploymentRecordUnknownArtifact.Inc()
+		return nil, &ClusterNoRepositoriesError{err: fmt.Errorf("no repositories found")}
 	default:
 		dtmetrics.PostDeploymentRecordHardFail.Inc()
 		slog.Error("all retries exhausted",
@@ -273,7 +286,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 	}
 }
 
-func (c *Client) PostWithRetry(ctx context.Context, url string, body []byte) ([]byte, int, error) {
+func (c *Client) postWithRetry(ctx context.Context, url string, body []byte) ([]byte, int, error) {
 	bodyReader := bytes.NewReader(body)
 	var lastErr error
 	// The first attempt is not a retry!
@@ -475,6 +488,7 @@ func buildClusterRequestBody(records []*DeploymentRecord) ([]byte, error) {
 	return json.Marshal(DeploymentRecords{
 		LogicalEnvironment:  records[0].LogicalEnvironment,
 		PhysicalEnvironment: records[0].PhysicalEnvironment,
+		PartialSuccess:      true,
 		Deployments:         deploymentRecords,
 	})
 }

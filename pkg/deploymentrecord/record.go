@@ -55,7 +55,7 @@ type DeploymentRecordResp struct {
 	DeploymentRecord
 	Created       string `json:"created"`
 	UpdatedAt     string `json:"updated_at"`
-	AttestationId int    `json:"attestation_id"`
+	AttestationID int    `json:"attestation_id"`
 }
 
 type DeploymentRecordErrorResp struct {
@@ -67,6 +67,7 @@ type DeploymentRecordErrorResp struct {
 type DeploymentRecords struct {
 	LogicalEnvironment  string                 `json:"logical_environment"`
 	PhysicalEnvironment string                 `json:"physical_environment"`
+	PartialSuccess      bool                   `json:"partial_success"`
 	Deployments         []DeploymentRecordBase `json:"deployments"`
 }
 
