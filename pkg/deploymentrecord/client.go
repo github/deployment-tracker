@@ -200,14 +200,14 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		return errors.New("record cannot be nil")
 	}
 
-	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
+	singleUrl := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
 
 	body, err := buildRequestBody(record)
 	if err != nil {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, url, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, singleUrl, body)
 
 	var clientErr *ClientError
 	switch {
@@ -215,7 +215,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		dtmetrics.PostDeploymentRecordClientError.Inc()
 		slog.Warn("client error, aborting",
 			"status_code", statusCode,
-			"url", url,
+			"url", singleUrl,
 			"resp_msg", string(respBody),
 		)
 		return fmt.Errorf("client error: %w", lastErr)
@@ -250,14 +250,14 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
+	clusterUrl := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
 
 	body, err := buildClusterRequestBody(records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal records: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, url, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, clusterUrl, body)
 
 	var clientErr *ClientError
 	switch {
@@ -265,7 +265,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		dtmetrics.PostDeploymentRecordClientError.Inc()
 		slog.Warn("client error, aborting",
 			"status_code", statusCode,
-			"url", url,
+			"url", clusterUrl,
 			"resp_msg", string(respBody),
 		)
 		return nil, fmt.Errorf("client error: %w", lastErr)
