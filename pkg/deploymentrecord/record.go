@@ -30,8 +30,8 @@ var validRuntimeRisks = map[RuntimeRisk]bool{
 	SensitiveData:    true,
 }
 
-// DeploymentRecordBase represents a deployment record for the deployment record cluster endpoint.
-type DeploymentRecordBase struct {
+// BaseRecord represents a deployment record for the deployment record cluster endpoint.
+type BaseRecord struct {
 	Name           string            `json:"name"`
 	Digest         string            `json:"digest"`
 	Version        string            `json:"version,omitempty"`
@@ -41,58 +41,62 @@ type DeploymentRecordBase struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 }
 
-// DeploymentRecord represents a deployment event record.
-type DeploymentRecord struct {
-	DeploymentRecordBase
+// Record represents a deployment event record.
+type Record struct {
+	BaseRecord
 	LogicalEnvironment  string `json:"logical_environment"`
 	PhysicalEnvironment string `json:"physical_environment"`
 	Cluster             string `json:"cluster"`
 }
 
-// DeploymentRecordResp represents the response of a created deployment record from the
+// RecordResp represents the response of a created deployment record from the
 // deployment record cluster endpoint.
-type DeploymentRecordResp struct {
-	DeploymentRecord
+type RecordResp struct {
+	Record
 	Created       string `json:"created"`
 	UpdatedAt     string `json:"updated_at"`
 	AttestationID int    `json:"attestation_id"`
 }
 
-type DeploymentRecordErrorResp struct {
-	DeploymentRecord
+// RecordErrorResp represents a failed deployment record from the
+// deployment record cluster endpoint, including the cause of the failure.
+type RecordErrorResp struct {
+	Record
 	Cause string `json:"cause"`
 }
 
-// DeploymentRecords represents the post body for the deployment record cluster endpoint.
-type DeploymentRecords struct {
-	LogicalEnvironment  string                 `json:"logical_environment"`
-	PhysicalEnvironment string                 `json:"physical_environment"`
-	PartialSuccess      bool                   `json:"partial_success"`
-	Deployments         []DeploymentRecordBase `json:"deployments"`
+// ClusterRecordsBody represents the post body for the deployment record cluster endpoint.
+type ClusterRecordsBody struct {
+	LogicalEnvironment  string       `json:"logical_environment"`
+	PhysicalEnvironment string       `json:"physical_environment"`
+	PartialSuccess      bool         `json:"partial_success"`
+	Deployments         []BaseRecord `json:"deployments"`
 }
 
-type DeploymentRecordsClusterResp struct {
-	TotalCount        int                          `json:"total_count"`
-	DeploymentRecords []*DeploymentRecordResp      `json:"deployment_records"`
-	Errors            []*DeploymentRecordErrorResp `json:"errors,omitempty"`
+// RecordsClusterResp represents the response from the deployment record
+// cluster endpoint, containing successfully created records and any errors.
+type RecordsClusterResp struct {
+	TotalCount        int                `json:"total_count"`
+	DeploymentRecords []*RecordResp      `json:"deployment_records"`
+	Errors            []*RecordErrorResp `json:"errors,omitempty"`
 }
 
-// NewDeploymentRecord creates a new DeploymentRecord with the given status.
+// NewDeploymentRecord creates a new Record with the given status.
 // Status must be either StatusDeployed or StatusDecommissioned.
 //
 //nolint:revive
 func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
-	cluster, status, deploymentName string, runtimeRisks []RuntimeRisk, tags map[string]string) *DeploymentRecord {
+	cluster, status, deploymentName string, runtimeRisks []RuntimeRisk, tags map[string]string) *Record {
 	// Validate status
 	if status != StatusDeployed && status != StatusDecommissioned {
 		status = StatusDeployed // default to deployed if invalid
 	}
 
-	return &DeploymentRecord{
+	return &Record{
 		LogicalEnvironment:  logicalEnv,
 		PhysicalEnvironment: physicalEnv,
 		Cluster:             cluster,
-		DeploymentRecordBase: DeploymentRecordBase{
+		BaseRecord: BaseRecord{
 			Name:           name,
 			Digest:         digest,
 			Version:        version,

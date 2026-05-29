@@ -278,8 +278,8 @@ func TestValidOrgPattern(t *testing.T) {
 	}
 }
 
-// testRecord returns a minimal valid DeploymentRecord for testing.
-func testRecord() *DeploymentRecord {
+// testRecord returns a minimal valid Record for testing.
+func testRecord() *Record {
 	return NewDeploymentRecord(
 		"ghcr.io/my-org/my-image",
 		"sha256:abc123",
@@ -309,7 +309,7 @@ func allCounters() []prometheus.Counter {
 func TestPostOne(t *testing.T) {
 	tests := []struct {
 		name                string
-		record              *DeploymentRecord
+		record              *Record
 		retries             int
 		handler             http.HandlerFunc
 		wantErr             bool
@@ -732,7 +732,7 @@ func TestPostOneRespectsRetryAfterAcrossGoroutines(t *testing.T) {
 func TestPostCluster(t *testing.T) {
 	tests := []struct {
 		name                string
-		records             []*DeploymentRecord
+		records             []*Record
 		handler             http.HandlerFunc
 		wantErr             bool
 		errType             any
@@ -746,14 +746,14 @@ func TestPostCluster(t *testing.T) {
 	}{
 		{
 			name:    "empty records returns nil",
-			records: []*DeploymentRecord{},
+			records: []*Record{},
 			handler: func(_ http.ResponseWriter, _ *http.Request) {
 				t.Fatal("server should not be called with empty records")
 			},
 		},
 		{
 			name:    "success on 207 returns body",
-			records: []*DeploymentRecord{testRecord()},
+			records: []*Record{testRecord()},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusMultiStatus)
 				_, _ = w.Write([]byte(`{"total_count":1,"deployment_records":[],"errors":[]}`))
@@ -763,7 +763,7 @@ func TestPostCluster(t *testing.T) {
 		},
 		{
 			name:    "404 returns ClusterNoRepositoriesError",
-			records: []*DeploymentRecord{testRecord()},
+			records: []*Record{testRecord()},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
 			},
@@ -773,7 +773,7 @@ func TestPostCluster(t *testing.T) {
 		},
 		{
 			name:    "400 returns client error",
-			records: []*DeploymentRecord{testRecord()},
+			records: []*Record{testRecord()},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte("bad request"))
@@ -784,7 +784,7 @@ func TestPostCluster(t *testing.T) {
 		},
 		{
 			name:    "500 retries exhausted returns error",
-			records: []*DeploymentRecord{testRecord()},
+			records: []*Record{testRecord()},
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 			},
@@ -882,7 +882,7 @@ func TestPostCluster_URLEscapesCluster(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	_, err = client.PostCluster(context.Background(), []*DeploymentRecord{testRecord()}, "cluster/with spaces")
+	_, err = client.PostCluster(context.Background(), []*Record{testRecord()}, "cluster/with spaces")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

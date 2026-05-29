@@ -48,8 +48,8 @@ type ttlCache interface {
 }
 
 type deploymentRecordPoster interface {
-	PostOne(ctx context.Context, record *deploymentrecord.DeploymentRecord) error
-	PostCluster(ctx context.Context, records []*deploymentrecord.DeploymentRecord, cluster string) ([]byte, error)
+	PostOne(ctx context.Context, record *deploymentrecord.Record) error
+	PostCluster(ctx context.Context, records []*deploymentrecord.Record, cluster string) ([]byte, error)
 }
 
 type podMetadataAggregator interface {

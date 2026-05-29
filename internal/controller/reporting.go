@@ -117,7 +117,7 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 	return lastErr
 }
 
-func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []interface{}) error {
+func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []any) error {
 	syncRecords := c.makeSyncRecords(ctx, syncClusterPods)
 	if len(syncRecords) == 0 {
 		slog.Info("No sync records to post")
@@ -139,7 +139,7 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 		)
 		return fmt.Errorf("failed to post sync cluster records: %w", err)
 	}
-	var deploymentRecords deploymentrecord.DeploymentRecordsClusterResp
+	var deploymentRecords deploymentrecord.RecordsClusterResp
 	err = json.Unmarshal(respBody, &deploymentRecords)
 	if err != nil {
 		slog.Error("Failed to unmarshall response",
@@ -157,9 +157,9 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []in
 	return nil
 }
 
-func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []interface{}) []*deploymentrecord.DeploymentRecord {
+func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any) []*deploymentrecord.Record {
 	seenSyncRecords := make(map[string]bool)
-	var syncRecords []*deploymentrecord.DeploymentRecord
+	var syncRecords []*deploymentrecord.Record
 	for _, p := range syncClusterPods {
 		pod, ok := p.(*corev1.Pod)
 		if !ok {
@@ -219,7 +219,7 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []inte
 	return syncRecords
 }
 
-func (c *Controller) fillCaches(deploymentRecords deploymentrecord.DeploymentRecordsClusterResp) {
+func (c *Controller) fillCaches(deploymentRecords deploymentrecord.RecordsClusterResp) {
 	slog.Info("Filling caches after posting sync cluster records")
 	// Fill observedDeployments cache with successful digests
 	for _, r := range deploymentRecords.DeploymentRecords {
@@ -348,7 +348,7 @@ func (c *Controller) recordContainer(ctx context.Context, pod *corev1.Pod, conta
 	return nil
 }
 
-func (c *Controller) buildRecord(pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) *deploymentrecord.DeploymentRecord {
+func (c *Controller) buildRecord(pod *corev1.Pod, container corev1.Container, eventType, workloadName string, aggPodMetadata *metadata.AggregatePodMetadata) *deploymentrecord.Record {
 	dn := getARDeploymentName(pod, container, c.cfg.Template, workloadName)
 	digest := getContainerDigest(pod, container.Name)
 

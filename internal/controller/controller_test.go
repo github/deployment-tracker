@@ -33,14 +33,14 @@ type mockPoster struct {
 	clusterErr         error
 }
 
-func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.DeploymentRecord) error {
+func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
 	return m.lastErr
 }
 
-func (m *mockPoster) PostCluster(_ context.Context, records []*deploymentrecord.DeploymentRecord, _ string) ([]byte, error) {
+func (m *mockPoster) PostCluster(_ context.Context, records []*deploymentrecord.Record, _ string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clusterCalls++

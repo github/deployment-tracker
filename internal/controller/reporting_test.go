@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestProcessSyncEvents_EmptyPodList(t *testing.T) {
 	poster := &mockPoster{}
 	ctrl := newTestController(poster)
 
-	err := ctrl.processSyncEvents(context.Background(), []interface{}{})
+	err := ctrl.processSyncEvents(context.Background(), []any{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, poster.getPostClusterCalls(), "PostCluster should not be called for empty pod list")
 }
@@ -130,28 +131,28 @@ func TestProcessSyncEvents_HappyPath(t *testing.T) {
 	digest := "sha256:abc123"
 	unknownDigest := "sha256:notfound999"
 	unauthorizedDigest := "sha256:unauthorized999"
-	clusterResp := deploymentrecord.DeploymentRecordsClusterResp{
+	clusterResp := deploymentrecord.RecordsClusterResp{
 		TotalCount: 1,
-		DeploymentRecords: []*deploymentrecord.DeploymentRecordResp{{
-			DeploymentRecord: deploymentrecord.DeploymentRecord{
-				DeploymentRecordBase: deploymentrecord.DeploymentRecordBase{
+		DeploymentRecords: []*deploymentrecord.RecordResp{{
+			Record: deploymentrecord.Record{
+				BaseRecord: deploymentrecord.BaseRecord{
 					DeploymentName: "default/test-deploy/app",
 					Digest:         digest,
 				},
 			},
 		}},
-		Errors: []*deploymentrecord.DeploymentRecordErrorResp{
+		Errors: []*deploymentrecord.RecordErrorResp{
 			{
-				DeploymentRecord: deploymentrecord.DeploymentRecord{
-					DeploymentRecordBase: deploymentrecord.DeploymentRecordBase{
+				Record: deploymentrecord.Record{
+					BaseRecord: deploymentrecord.BaseRecord{
 						Digest: unknownDigest,
 					},
 				},
 				Cause: "not_found",
 			},
 			{
-				DeploymentRecord: deploymentrecord.DeploymentRecord{
-					DeploymentRecordBase: deploymentrecord.DeploymentRecordBase{
+				Record: deploymentrecord.Record{
+					BaseRecord: deploymentrecord.BaseRecord{
 						Digest: unauthorizedDigest,
 					},
 				},
@@ -166,10 +167,10 @@ func TestProcessSyncEvents_HappyPath(t *testing.T) {
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
 
-	err = ctrl.processSyncEvents(context.Background(), []interface{}{
-		makePod("app", "test-deploy-abc123", digest, "ReplicaSet"),
-		makePod("unknown", "test-deploy-abc123", unknownDigest, "ReplicaSet"),
-		makePod("unauthorized", "test-deploy-abc123", unauthorizedDigest, "ReplicaSet"),
+	err = ctrl.processSyncEvents(context.Background(), []any{
+		makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet"),
+		makeTestPod("unknown", "test-deploy-abc456", unknownDigest, "ReplicaSet"),
+		makeTestPod("unauthorized", "test-deploy-abc789", unauthorizedDigest, "Job"),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getPostClusterCalls(), "PostCluster should be called once")
@@ -196,9 +197,9 @@ func TestProcessSyncEvents_DedupeContainers(t *testing.T) {
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
 
-	pod := makePod("app", "test-deploy-abc123", digest, "ReplicaSet")
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
 
-	err := ctrl.processSyncEvents(context.Background(), []interface{}{pod, pod})
+	err := ctrl.processSyncEvents(context.Background(), []any{pod, pod})
 	require.NoError(t, err)
 	assert.Equal(t, 1, poster.getPostClusterCalls(), "PostCluster should be called once")
 	assert.Equal(t, 1, poster.clusterRecordCount, "PostCluster should receive only 1 record")
@@ -211,9 +212,9 @@ func TestProcessSyncEvents_PostCluster404(t *testing.T) {
 	}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
-	pod := makePod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
+	pod := makeTestPod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
 
-	err := ctrl.processSyncEvents(context.Background(), []interface{}{pod})
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
 	require.NoError(t, err, "ClusterNoRepositoriesError should not propagate")
 	assert.Equal(t, 1, poster.getPostClusterCalls())
 
@@ -226,19 +227,19 @@ func TestProcessSyncEvents_PostCluster404(t *testing.T) {
 func TestProcessSyncEvents_PostCluster500(t *testing.T) {
 	t.Parallel()
 	poster := &mockPoster{
-		clusterErr: fmt.Errorf("server error"),
+		clusterErr: errors.New("server error"),
 	}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
-	pod := makePod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
+	pod := makeTestPod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
 
-	err := ctrl.processSyncEvents(context.Background(), []interface{}{pod})
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to post sync cluster records")
 	assert.Equal(t, 1, poster.getPostClusterCalls())
 }
 
-func makePod(containerName string, parentName string, digest string, parentKind string) *corev1.Pod {
+func makeTestPod(containerName string, parentName string, digest string, parentKind string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",

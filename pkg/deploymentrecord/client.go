@@ -165,6 +165,8 @@ func (c *ClientError) Unwrap() error {
 	return c.err
 }
 
+// ClusterNoRepositoriesError represents a 404 response from the cluster endpoint
+// indicating no repositories were found for the given cluster.
 type ClusterNoRepositoriesError struct {
 	err error
 }
@@ -195,19 +197,19 @@ func (n *NoArtifactError) Unwrap() error {
 
 // PostOne posts a single deployment record to the GitHub deployment
 // records API.
-func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
+func (c *Client) PostOne(ctx context.Context, record *Record) error {
 	if record == nil {
 		return errors.New("record cannot be nil")
 	}
 
-	singleUrl := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
+	singleURL := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record", c.baseURL, c.org)
 
 	body, err := buildRequestBody(record)
 	if err != nil {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, singleUrl, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, singleURL, body)
 
 	var clientErr *ClientError
 	switch {
@@ -215,7 +217,7 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 		dtmetrics.PostDeploymentRecordClientError.Inc()
 		slog.Warn("client error, aborting",
 			"status_code", statusCode,
-			"url", singleUrl,
+			"url", singleURL,
 			"resp_msg", string(respBody),
 		)
 		return fmt.Errorf("client error: %w", lastErr)
@@ -244,20 +246,20 @@ func (c *Client) PostOne(ctx context.Context, record *DeploymentRecord) error {
 
 // PostCluster sends a full cluster state of records to GitHub deployment
 // records cluster API.
-func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, cluster string) ([]byte, error) {
-	if len(records) <= 0 {
+func (c *Client) PostCluster(ctx context.Context, records []*Record, cluster string) ([]byte, error) {
+	if len(records) == 0 {
 		slog.Debug("Records is empty, skipping")
 		return nil, nil
 	}
 
-	clusterUrl := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
+	clusterURL := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
 
 	body, err := buildClusterRequestBody(records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal records: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, clusterUrl, body)
+	respBody, statusCode, lastErr := c.postWithRetry(ctx, clusterURL, body)
 
 	var clientErr *ClientError
 	switch {
@@ -265,7 +267,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		dtmetrics.PostDeploymentRecordClientError.Inc()
 		slog.Warn("client error, aborting",
 			"status_code", statusCode,
-			"url", clusterUrl,
+			"url", clusterURL,
 			"resp_msg", string(respBody),
 		)
 		return nil, fmt.Errorf("client error: %w", lastErr)
@@ -274,7 +276,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 		return respBody, nil
 	case statusCode == 404:
 		dtmetrics.PostDeploymentRecordUnknownArtifact.Inc()
-		return nil, &ClusterNoRepositoriesError{err: fmt.Errorf("no repositories found")}
+		return nil, &ClusterNoRepositoriesError{err: errors.New("no repositories found")}
 	default:
 		dtmetrics.PostDeploymentRecordHardFail.Inc()
 		slog.Error("all retries exhausted",
@@ -286,7 +288,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*DeploymentRecord, c
 	}
 }
 
-func (c *Client) postWithRetry(ctx context.Context, url string, body []byte) ([]byte, int, error) {
+func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byte) ([]byte, int, error) {
 	bodyReader := bytes.NewReader(body)
 	var lastErr error
 	// The first attempt is not a retry!
@@ -306,7 +308,7 @@ func (c *Client) postWithRetry(ctx context.Context, url string, body []byte) ([]
 		// Reset reader position for retries
 		bodyReader.Reset(body)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bodyReader)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -363,7 +365,7 @@ func (c *Client) postWithRetry(ctx context.Context, url string, body []byte) ([]
 					"retry-after", resp.Header.Get("Retry-After"),
 					"x-ratelimit-remaining", resp.Header.Get("X-Ratelimit-Remaining"),
 					"retry_delay", retryDelay.Seconds(),
-					"url", url,
+					"url", targetURL,
 					"resp_msg", string(respBody),
 				)
 				lastErr = fmt.Errorf("rate limited, attempt %d", attempt)
@@ -377,7 +379,7 @@ func (c *Client) postWithRetry(ctx context.Context, url string, body []byte) ([]
 			slog.Debug("retriable error",
 				"attempt", attempt,
 				"status_code", resp.StatusCode,
-				"url", url,
+				"url", targetURL,
 				"resp_msg", string(respBody),
 			)
 			lastErr = fmt.Errorf("server error, attempt %d", attempt)
@@ -463,29 +465,29 @@ func parseRateLimitDelay(resp *http.Response) time.Duration {
 
 // buildRequestBody adds return_records=false to a deployment record request body
 // which results in a minimal response payload.
-func buildRequestBody(record *DeploymentRecord) ([]byte, error) {
+func buildRequestBody(record *Record) ([]byte, error) {
 	return json.Marshal(struct {
-		DeploymentRecord
+		Record
 		ReturnRecords bool `json:"return_records"`
 	}{
-		DeploymentRecord: *record,
-		ReturnRecords:    false,
+		Record:        *record,
+		ReturnRecords: false,
 	})
 }
 
-// buildClusterRequestBody count the total records, builds DeploymentRecords,
+// buildClusterRequestBody count the total records, builds ClusterRecordsBody,
 // and returns []byte.
-func buildClusterRequestBody(records []*DeploymentRecord) ([]byte, error) {
-	if len(records) <= 0 {
+func buildClusterRequestBody(records []*Record) ([]byte, error) {
+	if len(records) == 0 {
 		return nil, nil
 	}
-	deploymentRecords := []DeploymentRecordBase{}
+	deploymentRecords := []BaseRecord{}
 
 	for _, r := range records {
-		deploymentRecords = append(deploymentRecords, r.DeploymentRecordBase)
+		deploymentRecords = append(deploymentRecords, r.BaseRecord)
 	}
 
-	return json.Marshal(DeploymentRecords{
+	return json.Marshal(ClusterRecordsBody{
 		LogicalEnvironment:  records[0].LogicalEnvironment,
 		PhysicalEnvironment: records[0].PhysicalEnvironment,
 		PartialSuccess:      true,
