@@ -12,6 +12,8 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: "-mod=readonly"
     permissions:
       contents: read
     steps:
@@ -30,6 +32,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: "-mod=readonly"
     permissions:
       contents: read
     steps:
