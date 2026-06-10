@@ -216,6 +216,9 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 		}
 	}
 
+	slog.Info("Created sync records",
+		"count", len(syncRecords),
+	)
 	return syncRecords
 }
 

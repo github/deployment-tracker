@@ -89,7 +89,8 @@ type Controller struct {
 	// informerSyncTimeout is the maximum time allowed for all informers to sync
 	// and prevents sync from hanging indefinitely.
 	informerSyncTimeout time.Duration
-	syncing             atomic.Bool
+	// syncing tracks if the kubernetes informers have finished syncing
+	syncing atomic.Bool
 }
 
 // New creates a new deployment tracker controller.
