@@ -167,7 +167,9 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 			continue
 		}
 
-		if pod.Status.Phase != corev1.PodRunning || !workload.HasSupportedOwner(pod) {
+		isRunningSupported := pod.Status.Phase == corev1.PodRunning && workload.HasSupportedOwner(pod)
+		isTerminalJob := workload.IsTerminalPhase(pod) && workload.GetJobOwnerName(pod) != ""
+		if !isRunningSupported && !isTerminalJob {
 			continue
 		}
 

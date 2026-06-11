@@ -239,6 +239,62 @@ func TestProcessSyncEvents_PostCluster500(t *testing.T) {
 	assert.Equal(t, 1, poster.getPostClusterCalls())
 }
 
+func TestMakeSyncRecords_TerminalJobPodIncluded(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:terminal-job-digest"
+	poster := &mockPoster{}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-job"}
+
+	pod := makeTestPod("worker", "test-job-abc123", digest, "Job")
+	pod.Status.Phase = corev1.PodSucceeded
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{pod})
+	assert.Len(t, records, 1, "terminal Job pod should be included in sync records")
+}
+
+func TestMakeSyncRecords_FailedJobPodIncluded(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:failed-job-digest"
+	poster := &mockPoster{}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-job"}
+
+	pod := makeTestPod("worker", "test-job-abc123", digest, "Job")
+	pod.Status.Phase = corev1.PodFailed
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{pod})
+	assert.Len(t, records, 1, "failed Job pod should be included in sync records")
+}
+
+func TestMakeSyncRecords_TerminalNonJobPodExcluded(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:terminal-non-job-digest"
+	poster := &mockPoster{}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
+	pod.Status.Phase = corev1.PodSucceeded
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{pod})
+	assert.Empty(t, records, "terminal non-Job pod should not be included in sync records")
+}
+
+func TestMakeSyncRecords_PendingJobPodExcluded(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:pending-job-digest"
+	poster := &mockPoster{}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-job"}
+
+	pod := makeTestPod("worker", "test-job-abc123", digest, "Job")
+	pod.Status.Phase = corev1.PodPending
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{pod})
+	assert.Empty(t, records, "pending Job pod should not be included in sync records")
+}
+
 func makeTestPod(containerName string, parentName string, digest string, parentKind string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
