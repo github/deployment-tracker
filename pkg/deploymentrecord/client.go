@@ -372,6 +372,11 @@ func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byt
 				continue
 			}
 			// Don't retry non rate limiting client errors
+			slog.Warn("client error, aborting",
+				"attempt", attempt,
+				"status_code", resp.StatusCode,
+				"resp_msg", string(respBody),
+			)
 			return nil, resp.StatusCode, &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
 		default:
 			// Retry with backoff
