@@ -331,6 +331,35 @@ func TestProcessSyncEvents_JobWaitFailed(t *testing.T) {
 	assert.True(t, exists, "observedDeployments should be populated from submitted records on wait failure")
 }
 
+func TestProcessSyncEvents_JobStatusFailed(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:abc123"
+	poster := &mockPoster{
+		jobResp: &deploymentrecord.JobResponse{JobID: 42},
+		jobStatus: &deploymentrecord.JobStatus{
+			JobID:  42,
+			Status: "failed",
+			Errors: []deploymentrecord.JobError{
+				{Name: "nginx", Cause: "error"},
+			},
+		},
+	}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
+
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
+	require.NoError(t, err, "failed job should not block startup")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls())
+	assert.Equal(t, 1, poster.getWaitForClusterJobCalls())
+
+	// observedDeployments should NOT be populated — records may not have been
+	// created, and suppressing re-posts would delay self-healing.
+	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", digest)
+	_, exists := ctrl.observedDeployments.Get(cacheKey)
+	assert.False(t, exists, "observedDeployments should not be populated when job failed")
+}
+
 func TestMakeSyncRecords_TerminalJobPodIncluded(t *testing.T) {
 	t.Parallel()
 	digest := "sha256:terminal-job-digest"

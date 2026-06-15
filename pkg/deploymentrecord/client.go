@@ -504,7 +504,7 @@ func (c *Client) doWithRetry(ctx context.Context, method, targetURL string, body
 				"status_code", resp.StatusCode,
 				"resp_msg", string(respBody),
 			)
-			return nil, resp.StatusCode, &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
+			return respBody, resp.StatusCode, &ClientError{err: fmt.Errorf("unexpected client err with status code %d", resp.StatusCode)}
 		default:
 			// Retry with backoff
 			dtmetrics.PostDeploymentRecordSoftFail.Inc()

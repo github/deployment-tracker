@@ -183,6 +183,16 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []an
 		"errors", len(jobStatus.Errors),
 	)
 
+	// If the job failed, don't populate observedDeployments — records may not
+	// have been created, and suppressing re-posts would delay self-healing.
+	// Only populate unknownArtifacts from errors so we avoid redundant 404s.
+	if jobStatus.Status == "failed" {
+		slog.Warn("Cluster job failed, skipping observedDeployments cache fill",
+			"job_id", jobResp.JobID,
+		)
+		return nil
+	}
+
 	c.fillCachesFromJobResult(syncRecords, jobResp, jobStatus)
 	return nil
 }
