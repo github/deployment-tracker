@@ -467,8 +467,9 @@ func (c *Client) doWithRetry(ctx context.Context, method, targetURL string, body
 			continue
 		}
 
-		// Drain and close response body to enable connection reuse
-		respBody, _ := io.ReadAll(resp.Body)
+		// Drain and close response body to enable connection reuse.
+		// Limit to 10MB to prevent unbounded memory allocation.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		_ = resp.Body.Close()
 
 		switch {
@@ -616,7 +617,14 @@ func buildClusterRequestBody(records []*Record) ([]byte, error) {
 	deploymentRecords := []BaseRecord{}
 
 	for _, r := range records {
+		if r == nil {
+			continue
+		}
 		deploymentRecords = append(deploymentRecords, r.BaseRecord)
+	}
+
+	if len(deploymentRecords) == 0 {
+		return nil, nil
 	}
 
 	return json.Marshal(ClusterRecordsBody{
