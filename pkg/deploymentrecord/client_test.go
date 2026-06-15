@@ -892,3 +892,371 @@ func TestPostCluster_URLEscapesCluster(t *testing.T) {
 		t.Errorf("raw path %q should end with %q", rawPath, wantSuffix)
 	}
 }
+
+func TestCreateClusterJob(t *testing.T) {
+	tests := []struct {
+		name                string
+		records             []*Record
+		handler             http.HandlerFunc
+		wantErr             bool
+		errType             any
+		errContain          string
+		wantJobID           int64
+		wantOk              float64
+		wantUnknownArtifact float64
+		wantSoftFail        float64
+		wantHardFail        float64
+		wantClientError     float64
+	}{
+		{
+			name:    "empty records returns error",
+			records: []*Record{},
+			handler: func(_ http.ResponseWriter, _ *http.Request) {
+				t.Fatal("server should not be called with empty records")
+			},
+			wantErr:    true,
+			errContain: "records cannot be empty",
+		},
+		{
+			name:    "202 accepted returns job response",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/orgs/test-org/artifacts/metadata/deployment-record/cluster/test-cluster/jobs" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job_id":42,"errors":[]}`))
+			},
+			wantJobID: 42,
+			wantOk:    1,
+		},
+		{
+			name:    "202 with rejected deployments",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job_id":99,"errors":[{"name":"bad-image","cause":"unauthorized"}]}`))
+			},
+			wantJobID: 99,
+			wantOk:    1,
+		},
+		{
+			name:    "409 conflict returns ClusterJobConflictError",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+			},
+			wantErr: true,
+			errType: &ClusterJobConflictError{},
+		},
+		{
+			name:    "404 returns ClusterNoRepositoriesError",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			wantErr:             true,
+			errType:             &ClusterNoRepositoriesError{},
+			wantUnknownArtifact: 1,
+		},
+		{
+			name:    "400 returns client error",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+			},
+			wantErr:         true,
+			errContain:      "cluster job creation failed",
+			wantClientError: 1,
+		},
+		{
+			name:    "500 retries exhausted",
+			records: []*Record{testRecord()},
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			wantErr:      true,
+			errContain:   "cluster job creation failed",
+			wantHardFail: 1,
+			wantSoftFail: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.handler)
+			t.Cleanup(srv.Close)
+
+			client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+
+			counters := allCounters()
+			snapshots := make([]float64, len(counters))
+			for i, c := range counters {
+				snapshots[i] = testutil.ToFloat64(c)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			resp, err := client.CreateClusterJob(ctx, tt.records, "test-cluster")
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errType != nil {
+					switch tt.errType.(type) {
+					case *ClusterJobConflictError:
+						var e *ClusterJobConflictError
+						if !errors.As(err, &e) {
+							t.Errorf("expected ClusterJobConflictError, got %T: %v", err, err)
+						}
+					case *ClusterNoRepositoriesError:
+						var e *ClusterNoRepositoriesError
+						if !errors.As(err, &e) {
+							t.Errorf("expected ClusterNoRepositoriesError, got %T: %v", err, err)
+						}
+					default:
+						t.Fatalf("unexpected error type in test: %T", tt.errType)
+					}
+				}
+				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContain)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if resp.JobID != tt.wantJobID {
+					t.Errorf("job_id = %d, want %d", resp.JobID, tt.wantJobID)
+				}
+			}
+
+			wantDeltas := []float64{
+				tt.wantOk,
+				tt.wantUnknownArtifact,
+				0, // rate limited
+				tt.wantSoftFail,
+				tt.wantHardFail,
+				tt.wantClientError,
+			}
+			names := []string{
+				"PostDeploymentRecordOk",
+				"PostDeploymentRecordUnknownArtifact",
+				"PostDeploymentRecordRateLimited",
+				"PostDeploymentRecordSoftFail",
+				"PostDeploymentRecordHardFail",
+				"PostDeploymentRecordClientError",
+			}
+			for i, c := range counters {
+				got := testutil.ToFloat64(c) - snapshots[i]
+				if got != wantDeltas[i] {
+					t.Errorf("%s delta = %v, want %v", names[i], got, wantDeltas[i])
+				}
+			}
+		})
+	}
+}
+
+func TestGetClusterJobStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    http.HandlerFunc
+		wantErr    bool
+		errContain string
+		wantStatus string
+	}{
+		{
+			name: "completed job",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("method = %s, want GET", r.Method)
+				}
+				wantPath := "/orgs/test-org/artifacts/metadata/deployment-record/cluster/test-cluster/jobs/42"
+				if r.URL.Path != wantPath {
+					t.Errorf("path = %s, want %s", r.URL.Path, wantPath)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"job_id":42,"status":"completed","total_count":10}`))
+			},
+			wantStatus: "completed",
+		},
+		{
+			name: "processing job",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"job_id":42,"status":"processing","started_at":"2026-06-10T12:00:00Z"}`))
+			},
+			wantStatus: "processing",
+		},
+		{
+			name: "404 job not found",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			wantErr:    true,
+			errContain: "not found",
+		},
+		{
+			name: "500 server error",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			wantErr:    true,
+			errContain: "failed to get job status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.handler)
+			t.Cleanup(srv.Close)
+
+			client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			status, err := client.GetClusterJobStatus(ctx, "test-cluster", 42)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errContain)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if status.Status != tt.wantStatus {
+					t.Errorf("status = %q, want %q", status.Status, tt.wantStatus)
+				}
+			}
+		})
+	}
+}
+
+func TestWaitForClusterJob_CompletesAfterPolling(t *testing.T) {
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := reqCount.Add(1)
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case count <= 2:
+			_, _ = w.Write([]byte(`{"job_id":42,"status":"processing"}`))
+		default:
+			_, _ = w.Write([]byte(`{"job_id":42,"status":"completed","total_count":10}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	status, err := client.WaitForClusterJob(ctx, "test-cluster", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.Status != "completed" {
+		t.Errorf("status = %q, want completed", status.Status)
+	}
+	if got := reqCount.Load(); got < 3 {
+		t.Errorf("expected at least 3 requests, got %d", got)
+	}
+}
+
+func TestWaitForClusterJob_FailedJob(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"job_id":42,"status":"failed","errors":[{"name":"bad","cause":"error"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	status, err := client.WaitForClusterJob(context.Background(), "test-cluster", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.Status != "failed" {
+		t.Errorf("status = %q, want failed", status.Status)
+	}
+}
+
+func TestWaitForClusterJob_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"job_id":42,"status":"processing"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	t.Cleanup(cancel)
+
+	_, err = client.WaitForClusterJob(ctx, "test-cluster", 42)
+	if err == nil {
+		t.Fatal("expected error from context cancellation")
+	}
+}
+
+func TestWaitForClusterJob_ImmediatePollFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.WaitForClusterJob(context.Background(), "test-cluster", 42)
+	if err == nil {
+		t.Fatal("expected error from poll failure")
+	}
+	if !strings.Contains(err.Error(), "polling job 42") {
+		t.Errorf("error %q should contain 'polling job 42'", err.Error())
+	}
+}
+
+func TestCreateClusterJob_MalformedJSONResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := NewClient(srv.URL, "test-org", WithRetries(0))
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.CreateClusterJob(context.Background(), []*Record{testRecord()}, "test-cluster")
+	if err == nil {
+		t.Fatal("expected error from malformed JSON")
+	}
+	if !strings.Contains(err.Error(), "failed to parse job response") {
+		t.Errorf("error %q should contain 'failed to parse job response'", err.Error())
+	}
+}

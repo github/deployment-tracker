@@ -26,11 +26,14 @@ import (
 type mockPoster struct {
 	mu                 sync.Mutex
 	calls              int
-	clusterCalls       int
 	clusterRecordCount int
+	jobCalls           int
+	jobWaitCalls       int
 	lastErr            error
-	clusterResp        []byte
-	clusterErr         error
+	jobResp            *deploymentrecord.JobResponse
+	jobErr             error
+	jobStatus          *deploymentrecord.JobStatus
+	jobWaitErr         error
 }
 
 func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.Record) error {
@@ -40,12 +43,19 @@ func (m *mockPoster) PostOne(_ context.Context, _ *deploymentrecord.Record) erro
 	return m.lastErr
 }
 
-func (m *mockPoster) PostCluster(_ context.Context, records []*deploymentrecord.Record, _ string) ([]byte, error) {
+func (m *mockPoster) CreateClusterJob(_ context.Context, records []*deploymentrecord.Record, _ string) (*deploymentrecord.JobResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.clusterCalls++
+	m.jobCalls++
 	m.clusterRecordCount = len(records)
-	return m.clusterResp, m.clusterErr
+	return m.jobResp, m.jobErr
+}
+
+func (m *mockPoster) WaitForClusterJob(_ context.Context, _ string, _ int64) (*deploymentrecord.JobStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobWaitCalls++
+	return m.jobStatus, m.jobWaitErr
 }
 
 func (m *mockPoster) getPostOneCalls() int {
@@ -54,10 +64,16 @@ func (m *mockPoster) getPostOneCalls() int {
 	return m.calls
 }
 
-func (m *mockPoster) getPostClusterCalls() int {
+func (m *mockPoster) getCreateClusterJobCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.clusterCalls
+	return m.jobCalls
+}
+
+func (m *mockPoster) getWaitForClusterJobCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.jobWaitCalls
 }
 
 // mockResolver is a test double for the workloadResolver interface.
@@ -90,6 +106,7 @@ func newTestController(poster *mockPoster) *Controller {
 			LogicalEnvironment:  "test",
 			PhysicalEnvironment: "test",
 			Cluster:             "test",
+			BulkClusterSync:     true,
 		},
 		workloadResolver:    &mockResolver{},
 		metadataAggregator:  &mockMetadataAggregator{},

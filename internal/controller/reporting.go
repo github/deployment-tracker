@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,42 +117,73 @@ func (c *Controller) processEvent(ctx context.Context, event PodEvent) error {
 }
 
 func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []any) error {
+	if !c.cfg.BulkClusterSync {
+		slog.Info("Async cluster sync disabled, skipping startup sync")
+		return nil
+	}
+
 	syncRecords := c.makeSyncRecords(ctx, syncClusterPods)
 	if len(syncRecords) == 0 {
 		slog.Info("No sync records to post")
 		return nil
 	}
 
-	respBody, err := c.apiClient.PostCluster(ctx, syncRecords, c.cfg.Cluster)
-	var clusterNoRepositoriesError *deploymentrecord.ClusterNoRepositoriesError
+	jobResp, err := c.apiClient.CreateClusterJob(ctx, syncRecords, c.cfg.Cluster)
 	if err != nil {
-		if errors.As(err, &clusterNoRepositoriesError) {
-			slog.Info("Cluster sync found no creatable records",
+		var conflictErr *deploymentrecord.ClusterJobConflictError
+		var noReposErr *deploymentrecord.ClusterNoRepositoriesError
+
+		switch {
+		case errors.As(err, &conflictErr):
+			slog.Warn("Cluster job already in progress, skipping startup sync",
+				"org", c.cfg.Organization,
+			)
+			c.fillCachesFromSubmitted(syncRecords)
+			return nil
+
+		case errors.As(err, &noReposErr):
+			slog.Info("Async cluster endpoint not available, skipping startup sync",
 				"org", c.cfg.Organization,
 			)
 			return nil
+
+		default:
+			slog.Error("Failed to create cluster job",
+				"error", err,
+				"record_count", len(syncRecords),
+			)
+			return fmt.Errorf("failed to create cluster job: %w", err)
 		}
-		slog.Error("Failed to post sync cluster records",
-			"error", err,
-			"record_count", len(syncRecords),
-		)
-		return fmt.Errorf("failed to post sync cluster records: %w", err)
 	}
-	var deploymentRecords deploymentrecord.RecordsClusterResp
-	err = json.Unmarshal(respBody, &deploymentRecords)
-	if err != nil {
-		slog.Error("Failed to unmarshall response",
-			"error", err,
-			"record_count", len(syncRecords),
+
+	if len(jobResp.Errors) > 0 {
+		slog.Warn("Some deployments rejected from job submission",
+			"job_id", jobResp.JobID,
+			"rejected_count", len(jobResp.Errors),
 		)
+	}
+
+	// Wait for job completion with a timeout to prevent indefinite startup delay.
+	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	jobStatus, err := c.apiClient.WaitForClusterJob(jobCtx, c.cfg.Cluster, jobResp.JobID)
+	if err != nil {
+		slog.Error("Failed waiting for cluster job, filling caches from submitted records",
+			"job_id", jobResp.JobID,
+			"error", err,
+		)
+		c.fillCachesFromSubmitted(syncRecords)
 		return nil
 	}
-	slog.Info("Successfully posted sync cluster records",
-		"created", len(deploymentRecords.DeploymentRecords),
-		"errors", len(deploymentRecords.Errors),
+
+	slog.Info("Cluster job completed",
+		"job_id", jobResp.JobID,
+		"status", jobStatus.Status,
+		"total_count", jobStatus.TotalCount,
+		"errors", len(jobStatus.Errors),
 	)
 
-	c.fillCaches(deploymentRecords)
+	c.fillCachesFromJobResult(syncRecords, jobResp, jobStatus)
 	return nil
 }
 
@@ -224,20 +254,51 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 	return syncRecords
 }
 
-func (c *Controller) fillCaches(deploymentRecords deploymentrecord.RecordsClusterResp) {
-	slog.Info("Filling caches after posting sync cluster records")
-	// Fill observedDeployments cache with successful digests
-	for _, r := range deploymentRecords.DeploymentRecords {
+// fillCachesFromSubmitted populates the observedDeployments cache from the
+// records we submitted, without waiting for a response. Used when we can't
+// get a response (409 conflict, wait timeout, job failure).
+func (c *Controller) fillCachesFromSubmitted(records []*deploymentrecord.Record) {
+	slog.Info("Filling observedDeployments cache from submitted records",
+		"count", len(records),
+	)
+	for _, r := range records {
 		cacheKey := getCacheKey(EventCreated, r.DeploymentName, r.Digest)
 		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
 	}
+}
 
-	// Fill unknownArtifacts cache with unknown digests
-	for _, r := range deploymentRecords.Errors {
-		if r.Cause == "not_found" {
-			c.unknownArtifacts.Set(r.Digest, true, unknownArtifactTTL)
+// fillCachesFromJobResult populates both caches after an async job completes.
+// observedDeployments is filled from submitted records, and unknownArtifacts
+// is filled from error responses with cause "not_found".
+func (c *Controller) fillCachesFromJobResult(records []*deploymentrecord.Record, jobResp *deploymentrecord.JobResponse, jobStatus *deploymentrecord.JobStatus) {
+	slog.Info("Filling caches after cluster job completion",
+		"record_count", len(records),
+	)
+
+	// Build a name→digests lookup from submitted records so we can
+	// key unknownArtifacts by digest (which is how recordContainer looks them up).
+	// Multiple records can share the same image name with different digests,
+	// so we only cache when the mapping is unambiguous (exactly one digest per name).
+	nameToDigests := make(map[string][]string, len(records))
+	for _, r := range records {
+		cacheKey := getCacheKey(EventCreated, r.DeploymentName, r.Digest)
+		c.observedDeployments.Set(cacheKey, true, 2*time.Minute)
+		nameToDigests[r.Name] = append(nameToDigests[r.Name], r.Digest)
+	}
+
+	cacheUnknownDigests := func(errors []deploymentrecord.JobError) {
+		for _, e := range errors {
+			if e.Cause == "not_found" {
+				if digests, ok := nameToDigests[e.Name]; ok && len(digests) == 1 {
+					c.unknownArtifacts.Set(digests[0], true, unknownArtifactTTL)
+				}
+			}
 		}
 	}
+
+	// Fill unknownArtifacts from job submission and completion errors
+	cacheUnknownDigests(jobResp.Errors)
+	cacheUnknownDigests(jobStatus.Errors)
 }
 
 // recordContainer records a single container's deployment info.

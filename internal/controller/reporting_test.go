@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -116,6 +115,22 @@ func TestRecordContainer_SuccessfulPostDoesNotPopulateUnknownCache(t *testing.T)
 	assert.False(t, exists, "successful post should not cache digest as unknown")
 }
 
+func TestProcessSyncEvents_DisabledSkipsSync(t *testing.T) {
+	t.Parallel()
+	poster := &mockPoster{
+		jobResp:   &deploymentrecord.JobResponse{JobID: 1},
+		jobStatus: &deploymentrecord.JobStatus{Status: "completed"},
+	}
+	ctrl := newTestController(poster)
+	ctrl.cfg.BulkClusterSync = false
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+	pod := makeTestPod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
+
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
+	require.NoError(t, err)
+	assert.Equal(t, 0, poster.getCreateClusterJobCalls(), "should not call CreateClusterJob when disabled")
+}
+
 func TestProcessSyncEvents_EmptyPodList(t *testing.T) {
 	t.Parallel()
 	poster := &mockPoster{}
@@ -123,77 +138,109 @@ func TestProcessSyncEvents_EmptyPodList(t *testing.T) {
 
 	err := ctrl.processSyncEvents(context.Background(), []any{})
 	require.NoError(t, err)
-	assert.Equal(t, 0, poster.getPostClusterCalls(), "PostCluster should not be called for empty pod list")
+	assert.Equal(t, 0, poster.getCreateClusterJobCalls(), "CreateClusterJob should not be called for empty pod list")
 }
 
 func TestProcessSyncEvents_HappyPath(t *testing.T) {
 	t.Parallel()
 	digest := "sha256:abc123"
 	unknownDigest := "sha256:notfound999"
-	unauthorizedDigest := "sha256:unauthorized999"
-	clusterResp := deploymentrecord.RecordsClusterResp{
-		TotalCount: 1,
-		DeploymentRecords: []*deploymentrecord.RecordResp{{
-			Record: deploymentrecord.Record{
-				BaseRecord: deploymentrecord.BaseRecord{
-					DeploymentName: "default/test-deploy/app",
-					Digest:         digest,
-				},
-			},
-		}},
-		Errors: []*deploymentrecord.RecordErrorResp{
-			{
-				Record: deploymentrecord.Record{
-					BaseRecord: deploymentrecord.BaseRecord{
-						Digest: unknownDigest,
-					},
-				},
-				Cause: "not_found",
-			},
-			{
-				Record: deploymentrecord.Record{
-					BaseRecord: deploymentrecord.BaseRecord{
-						Digest: unauthorizedDigest,
-					},
-				},
-				Cause: "unauthorized",
+
+	// Use distinct image names so name→digest mapping is unambiguous.
+	knownPod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
+	unknownPod := makeTestPod("sidecar", "test-deploy-abc456", unknownDigest, "ReplicaSet")
+	unknownPod.Spec.Containers[0].Image = "busybox:latest"
+
+	poster := &mockPoster{
+		jobResp: &deploymentrecord.JobResponse{
+			JobID: 42,
+			// Name is the image name, matched against submitted records
+			// to resolve the digest for unknownArtifacts cache keying.
+			Errors: []deploymentrecord.JobError{
+				{Name: "busybox", Cause: "not_found"},
 			},
 		},
+		jobStatus: &deploymentrecord.JobStatus{
+			JobID:      42,
+			Status:     "completed",
+			TotalCount: 2,
+		},
 	}
-	respJSON, err := json.Marshal(clusterResp)
-	require.NoError(t, err)
-
-	poster := &mockPoster{clusterResp: respJSON}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
 
-	err = ctrl.processSyncEvents(context.Background(), []any{
-		makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet"),
-		makeTestPod("unknown", "test-deploy-abc456", unknownDigest, "ReplicaSet"),
-		makeTestPod("unauthorized", "test-deploy-abc789", unauthorizedDigest, "Job"),
-	})
+	err := ctrl.processSyncEvents(context.Background(), []any{knownPod, unknownPod})
 	require.NoError(t, err)
-	assert.Equal(t, 1, poster.getPostClusterCalls(), "PostCluster should be called once")
-	assert.Equal(t, 3, poster.clusterRecordCount, "PostCluster should receive 3 records")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls(), "CreateClusterJob should be called once")
+	assert.Equal(t, 1, poster.getWaitForClusterJobCalls(), "WaitForClusterJob should be called once")
+	assert.Equal(t, 2, poster.clusterRecordCount, "CreateClusterJob should receive 2 records")
 
-	// Successful record should be in observedDeployments cache
+	// All submitted records should be in observedDeployments cache
 	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", digest)
 	_, exists := ctrl.observedDeployments.Get(cacheKey)
-	assert.True(t, exists, "successful record should populate observedDeployments cache")
+	assert.True(t, exists, "submitted record should populate observedDeployments cache")
 
-	// not_found error should be in unknownArtifacts cache
-	_, exists = ctrl.unknownArtifacts.Get("sha256:notfound999")
-	assert.True(t, exists, "not_found error should populate unknownArtifacts cache")
+	// not_found error for "busybox" should cache its digest (unambiguous mapping)
+	_, exists = ctrl.unknownArtifacts.Get(unknownDigest)
+	assert.True(t, exists, "not_found error should populate unknownArtifacts cache by digest")
 
-	// unauthorized error should not be in unknownArtifacts cache
-	_, exists = ctrl.unknownArtifacts.Get("sha256:unauthorized999")
-	assert.False(t, exists, "unauthorized error should not populate unknownArtifacts cache")
+	// Known digest should NOT be in unknownArtifacts
+	_, exists = ctrl.unknownArtifacts.Get(digest)
+	assert.False(t, exists, "known artifact should not be in unknownArtifacts cache")
+}
+
+func TestProcessSyncEvents_AmbiguousImageNameSkipsUnknownCache(t *testing.T) {
+	t.Parallel()
+	digest1 := "sha256:abc123"
+	digest2 := "sha256:def456"
+
+	// Both pods use the same image name "nginx" with different digests.
+	// The name→digest mapping is ambiguous, so not_found errors should
+	// NOT populate unknownArtifacts (we can't tell which digest to cache).
+	poster := &mockPoster{
+		jobResp: &deploymentrecord.JobResponse{
+			JobID: 42,
+			Errors: []deploymentrecord.JobError{
+				{Name: "nginx", Cause: "not_found"},
+			},
+		},
+		jobStatus: &deploymentrecord.JobStatus{
+			JobID:      42,
+			Status:     "completed",
+			TotalCount: 2,
+		},
+	}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	err := ctrl.processSyncEvents(context.Background(), []any{
+		makeTestPod("app", "test-deploy-abc123", digest1, "ReplicaSet"),
+		makeTestPod("sidecar", "test-deploy-abc456", digest2, "ReplicaSet"),
+	})
+	require.NoError(t, err)
+
+	// Neither digest should be cached since "nginx" maps to two digests
+	_, exists := ctrl.unknownArtifacts.Get(digest1)
+	assert.False(t, exists, "ambiguous name should not cache first digest")
+	_, exists = ctrl.unknownArtifacts.Get(digest2)
+	assert.False(t, exists, "ambiguous name should not cache second digest")
+
+	// But observedDeployments should still be populated for both
+	cacheKey1 := getCacheKey(EventCreated, "default/test-deploy/app", digest1)
+	_, exists = ctrl.observedDeployments.Get(cacheKey1)
+	assert.True(t, exists, "observedDeployments should be populated regardless")
 }
 
 func TestProcessSyncEvents_DedupeContainers(t *testing.T) {
 	t.Parallel()
 	digest := "sha256:abc123"
-	poster := &mockPoster{}
+	poster := &mockPoster{
+		jobResp: &deploymentrecord.JobResponse{JobID: 1},
+		jobStatus: &deploymentrecord.JobStatus{
+			JobID:  1,
+			Status: "completed",
+		},
+	}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
 
@@ -201,33 +248,56 @@ func TestProcessSyncEvents_DedupeContainers(t *testing.T) {
 
 	err := ctrl.processSyncEvents(context.Background(), []any{pod, pod})
 	require.NoError(t, err)
-	assert.Equal(t, 1, poster.getPostClusterCalls(), "PostCluster should be called once")
-	assert.Equal(t, 1, poster.clusterRecordCount, "PostCluster should receive only 1 record")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls(), "CreateClusterJob should be called once")
+	assert.Equal(t, 1, poster.clusterRecordCount, "CreateClusterJob should receive only 1 record")
 }
 
-func TestProcessSyncEvents_PostCluster404(t *testing.T) {
+func TestProcessSyncEvents_409Conflict(t *testing.T) {
 	t.Parallel()
+	digest := "sha256:abc123"
 	poster := &mockPoster{
-		clusterErr: &deploymentrecord.ClusterNoRepositoriesError{},
+		jobErr: &deploymentrecord.ClusterJobConflictError{},
 	}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
-	pod := makeTestPod("app", "test-deploy-abc123", "sha256:abc123", "ReplicaSet")
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
 
 	err := ctrl.processSyncEvents(context.Background(), []any{pod})
-	require.NoError(t, err, "ClusterNoRepositoriesError should not propagate")
-	assert.Equal(t, 1, poster.getPostClusterCalls())
+	require.NoError(t, err, "409 conflict should not propagate as error")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls())
+	assert.Equal(t, 0, poster.getWaitForClusterJobCalls(), "should not wait on conflict")
 
-	// Caches should remain empty since no response was processed
-	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", "sha256:abc123")
+	// Caches should be populated from submitted records
+	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", digest)
+	_, exists := ctrl.observedDeployments.Get(cacheKey)
+	assert.True(t, exists, "observedDeployments should be populated from submitted records on 409")
+}
+
+func TestProcessSyncEvents_AsyncEndpointNotAvailable(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:abc123"
+	poster := &mockPoster{
+		jobErr: &deploymentrecord.ClusterNoRepositoriesError{},
+	}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
+
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
+	require.NoError(t, err, "404 should not propagate as error")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls())
+	assert.Equal(t, 0, poster.getWaitForClusterJobCalls(), "should not wait on 404")
+
+	// Caches should remain empty — no data to fill from
+	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", digest)
 	_, exists := ctrl.observedDeployments.Get(cacheKey)
 	assert.False(t, exists, "observedDeployments should not be populated on 404")
 }
 
-func TestProcessSyncEvents_PostCluster500(t *testing.T) {
+func TestProcessSyncEvents_JobCreationFailed(t *testing.T) {
 	t.Parallel()
 	poster := &mockPoster{
-		clusterErr: errors.New("server error"),
+		jobErr: errors.New("server error"),
 	}
 	ctrl := newTestController(poster)
 	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
@@ -235,8 +305,30 @@ func TestProcessSyncEvents_PostCluster500(t *testing.T) {
 
 	err := ctrl.processSyncEvents(context.Background(), []any{pod})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to post sync cluster records")
-	assert.Equal(t, 1, poster.getPostClusterCalls())
+	assert.Contains(t, err.Error(), "failed to create cluster job")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls())
+}
+
+func TestProcessSyncEvents_JobWaitFailed(t *testing.T) {
+	t.Parallel()
+	digest := "sha256:abc123"
+	poster := &mockPoster{
+		jobResp:    &deploymentrecord.JobResponse{JobID: 42},
+		jobWaitErr: errors.New("context deadline exceeded"),
+	}
+	ctrl := newTestController(poster)
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+	pod := makeTestPod("app", "test-deploy-abc123", digest, "ReplicaSet")
+
+	err := ctrl.processSyncEvents(context.Background(), []any{pod})
+	require.NoError(t, err, "job wait failure should not block startup")
+	assert.Equal(t, 1, poster.getCreateClusterJobCalls())
+	assert.Equal(t, 1, poster.getWaitForClusterJobCalls())
+
+	// Should still fill caches from submitted records
+	cacheKey := getCacheKey(EventCreated, "default/test-deploy/app", digest)
+	_, exists := ctrl.observedDeployments.Get(cacheKey)
+	assert.True(t, exists, "observedDeployments should be populated from submitted records on wait failure")
 }
 
 func TestMakeSyncRecords_TerminalJobPodIncluded(t *testing.T) {

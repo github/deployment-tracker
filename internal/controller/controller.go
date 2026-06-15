@@ -49,7 +49,8 @@ type ttlCache interface {
 
 type deploymentRecordPoster interface {
 	PostOne(ctx context.Context, record *deploymentrecord.Record) error
-	PostCluster(ctx context.Context, records []*deploymentrecord.Record, cluster string) ([]byte, error)
+	CreateClusterJob(ctx context.Context, records []*deploymentrecord.Record, cluster string) (*deploymentrecord.JobResponse, error)
+	WaitForClusterJob(ctx context.Context, cluster string, jobID int64) (*deploymentrecord.JobStatus, error)
 }
 
 type podMetadataAggregator interface {
@@ -89,7 +90,10 @@ type Controller struct {
 	// informerSyncTimeout is the maximum time allowed for all informers to sync
 	// and prevents sync from hanging indefinitely.
 	informerSyncTimeout time.Duration
-	// syncing tracks if the kubernetes informers have finished syncing
+	// syncing gates informer event handlers during startup. When true,
+	// pod add events are suppressed so they can be reported via the bulk
+	// cluster job instead of individual PostOne calls. Only set when
+	// BulkClusterSync is enabled.
 	syncing atomic.Bool
 }
 
@@ -151,7 +155,12 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 		unknownArtifacts:    amcache.NewExpiring(),
 		informerSyncTimeout: informerSyncTimeoutDuration,
 	}
-	cntrl.syncing.Store(true)
+	// Only gate informer events when bulk cluster sync is enabled.
+	// When disabled, all pods discovered during informer sync will be
+	// enqueued as individual events.
+	if cfg.BulkClusterSync {
+		cntrl.syncing.Store(true)
+	}
 
 	// Add event handlers to the informer
 	_, err = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{

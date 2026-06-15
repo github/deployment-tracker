@@ -108,6 +108,28 @@ func NewDeploymentRecord(name, digest, version, logicalEnv, physicalEnv,
 	}
 }
 
+// JobResponse represents the 202 Accepted response from CreateClusterJob.
+type JobResponse struct {
+	JobID  int64      `json:"job_id"`
+	Errors []JobError `json:"errors,omitempty"`
+}
+
+// JobError represents a rejected deployment from the async job submission.
+// Name is the image/container name from the deployment record, not the digest.
+type JobError struct {
+	Name  string `json:"name"`
+	Cause string `json:"cause"`
+}
+
+// JobStatus represents the response from GetClusterJobStatus.
+type JobStatus struct {
+	JobID      int64      `json:"job_id"`
+	Status     string     `json:"status"`
+	StartedAt  string     `json:"started_at,omitempty"`
+	TotalCount int        `json:"total_count,omitempty"`
+	Errors     []JobError `json:"errors,omitempty"`
+}
+
 // ValidateRuntimeRisk confirms if string is a valid runtime risk,
 // then returns the canonical runtime risk constant if valid, empty string otherwise.
 func ValidateRuntimeRisk(risk string) RuntimeRisk {

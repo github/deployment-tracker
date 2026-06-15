@@ -96,6 +96,7 @@ func main() {
 		GHAppPrivateKey:     ghAppPrivateKey,
 		GHAppPrivateKeyPath: getEnvOrDefault("GH_APP_PRIV_KEY_PATH", ""),
 		Organization:        os.Getenv("GITHUB_ORG"),
+		BulkClusterSync:     strings.EqualFold(getEnvOrDefault("BULK_CLUSTER_SYNC", "false"), "true"),
 	}
 
 	if len(cntrlCfg.GHAppPrivateKey) > 0 && cntrlCfg.GHAppPrivateKeyPath != "" {

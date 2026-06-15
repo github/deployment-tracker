@@ -37,8 +37,12 @@ func (m *mockRecordPoster) PostOne(_ context.Context, record *deploymentrecord.R
 	return m.err
 }
 
-func (m *mockRecordPoster) PostCluster(_ context.Context, _ []*deploymentrecord.Record, _ string) ([]byte, error) {
-	return nil, nil
+func (m *mockRecordPoster) CreateClusterJob(_ context.Context, _ []*deploymentrecord.Record, _ string) (*deploymentrecord.JobResponse, error) {
+	return &deploymentrecord.JobResponse{}, nil
+}
+
+func (m *mockRecordPoster) WaitForClusterJob(_ context.Context, _ string, _ int64) (*deploymentrecord.JobStatus, error) {
+	return &deploymentrecord.JobStatus{Status: "completed"}, nil
 }
 
 // Helper that allows tests to read captured records safely.

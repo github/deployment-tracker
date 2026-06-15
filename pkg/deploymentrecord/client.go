@@ -179,6 +179,20 @@ func (c *ClusterNoRepositoriesError) Unwrap() error {
 	return c.err
 }
 
+// ClusterJobConflictError represents a 409 response indicating a job is already
+// pending or processing for this cluster and environment.
+type ClusterJobConflictError struct {
+	err error
+}
+
+func (c *ClusterJobConflictError) Error() string {
+	return fmt.Sprintf("cluster_job_conflict_error: %s", c.err.Error())
+}
+
+func (c *ClusterJobConflictError) Unwrap() error {
+	return c.err
+}
+
 // NoArtifactError represents a 404 client response whose body indicates "no artifacts found".
 type NoArtifactError struct {
 	err error
@@ -209,7 +223,7 @@ func (c *Client) PostOne(ctx context.Context, record *Record) error {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, singleURL, body)
+	respBody, statusCode, lastErr := c.doWithRetry(ctx, http.MethodPost, singleURL, body)
 
 	var clientErr *ClientError
 	switch {
@@ -259,7 +273,7 @@ func (c *Client) PostCluster(ctx context.Context, records []*Record, cluster str
 		return nil, fmt.Errorf("failed to marshal records: %w", err)
 	}
 
-	respBody, statusCode, lastErr := c.postWithRetry(ctx, clusterURL, body)
+	respBody, statusCode, lastErr := c.doWithRetry(ctx, http.MethodPost, clusterURL, body)
 
 	var clientErr *ClientError
 	switch {
@@ -288,8 +302,109 @@ func (c *Client) PostCluster(ctx context.Context, records []*Record, cluster str
 	}
 }
 
-func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byte) ([]byte, int, error) {
-	bodyReader := bytes.NewReader(body)
+// CreateClusterJob submits the full cluster state as an async job.
+// Returns the job response (including job ID) and any authorization errors
+// for rejected deployments.
+func (c *Client) CreateClusterJob(ctx context.Context, records []*Record, cluster string) (*JobResponse, error) {
+	if len(records) == 0 {
+		return nil, errors.New("records cannot be empty")
+	}
+
+	jobURL := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s/jobs",
+		c.baseURL, c.org, url.PathEscape(cluster))
+
+	body, err := buildClusterRequestBody(records)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal records: %w", err)
+	}
+
+	respBody, statusCode, lastErr := c.doWithRetry(ctx, http.MethodPost, jobURL, body)
+
+	switch {
+	case statusCode == 409:
+		return nil, &ClusterJobConflictError{err: errors.New("a job is already pending or processing for this cluster")}
+	case statusCode == 404:
+		dtmetrics.PostDeploymentRecordUnknownArtifact.Inc()
+		return nil, &ClusterNoRepositoriesError{err: errors.New("async endpoint not available")}
+	case lastErr != nil:
+		var clientErr *ClientError
+		if errors.As(lastErr, &clientErr) {
+			dtmetrics.PostDeploymentRecordClientError.Inc()
+		} else {
+			dtmetrics.PostDeploymentRecordHardFail.Inc()
+		}
+		return nil, fmt.Errorf("cluster job creation failed: %w", lastErr)
+	case statusCode >= 200 && statusCode < 300:
+		dtmetrics.PostDeploymentRecordOk.Inc()
+		var jobResp JobResponse
+		if err := json.Unmarshal(respBody, &jobResp); err != nil {
+			return nil, fmt.Errorf("failed to parse job response: %w", err)
+		}
+		return &jobResp, nil
+	default:
+		dtmetrics.PostDeploymentRecordHardFail.Inc()
+		return nil, fmt.Errorf("unexpected status code %d", statusCode)
+	}
+}
+
+// GetClusterJobStatus retrieves the current status of an async cluster job.
+func (c *Client) GetClusterJobStatus(ctx context.Context, cluster string, jobID int64) (*JobStatus, error) {
+	jobURL := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s/jobs/%d",
+		c.baseURL, c.org, url.PathEscape(cluster), jobID)
+
+	respBody, statusCode, lastErr := c.doWithRetry(ctx, http.MethodGet, jobURL, nil)
+
+	switch {
+	case lastErr != nil:
+		return nil, fmt.Errorf("failed to get job status: %w", lastErr)
+	case statusCode == 404:
+		return nil, fmt.Errorf("job %d not found", jobID)
+	case statusCode >= 200 && statusCode < 300:
+		var status JobStatus
+		if err := json.Unmarshal(respBody, &status); err != nil {
+			return nil, fmt.Errorf("failed to parse job status: %w", err)
+		}
+		return &status, nil
+	default:
+		return nil, fmt.Errorf("unexpected status code %d", statusCode)
+	}
+}
+
+// WaitForClusterJob polls GetClusterJobStatus until the job reaches a terminal
+// state (completed or failed). Uses exponential backoff between polls.
+func (c *Client) WaitForClusterJob(ctx context.Context, cluster string, jobID int64) (*JobStatus, error) {
+	const initialDelay = 2 * time.Second
+	const maxDelay = 30 * time.Second
+
+	for attempt := 0; ; attempt++ {
+		status, err := c.GetClusterJobStatus(ctx, cluster, jobID)
+		if err != nil {
+			return nil, fmt.Errorf("polling job %d: %w", jobID, err)
+		}
+		if status.Status == "completed" || status.Status == "failed" {
+			return status, nil
+		}
+
+		delay := time.Duration(math.Min(
+			float64(initialDelay)*math.Pow(2, float64(attempt)),
+			float64(maxDelay),
+		))
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (c *Client) doWithRetry(ctx context.Context, method, targetURL string, body []byte) ([]byte, int, error) {
+	var bodyReader *bytes.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
 	var lastErr error
 	// The first attempt is not a retry!
 	for attempt := range c.retries + 1 {
@@ -306,14 +421,23 @@ func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byt
 		}
 
 		// Reset reader position for retries
-		bodyReader.Reset(body)
+		if bodyReader != nil {
+			bodyReader.Reset(body)
+		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bodyReader)
+		var reqBody io.Reader
+		if bodyReader != nil {
+			reqBody = bodyReader
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, reqBody)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		req.Header.Set("Content-Type", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		if c.transport != nil {
 			// Token is thread safe, so no need for external
 			// locking
@@ -333,7 +457,7 @@ func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byt
 		dur := time.Since(start)
 		dtmetrics.PostDeploymentRecordTimer.Observe(dur.Seconds())
 		if err != nil {
-			lastErr = fmt.Errorf("post request failed: %w", err)
+			lastErr = fmt.Errorf("request failed: %w", err)
 
 			slog.Warn("recoverable error, re-trying",
 				"attempt", attempt,
@@ -352,6 +476,9 @@ func (c *Client) postWithRetry(ctx context.Context, targetURL string, body []byt
 			return respBody, resp.StatusCode, nil
 		case resp.StatusCode == 404:
 			// Not found - do not retry
+			return respBody, resp.StatusCode, nil
+		case resp.StatusCode == 409:
+			// Conflict - do not retry
 			return respBody, resp.StatusCode, nil
 		case resp.StatusCode >= 400 && resp.StatusCode < 500:
 			// Check headers that indicate rate limiting
