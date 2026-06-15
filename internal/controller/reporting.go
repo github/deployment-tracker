@@ -286,8 +286,8 @@ func (c *Controller) fillCachesFromJobResult(records []*deploymentrecord.Record,
 		nameToDigests[r.Name] = append(nameToDigests[r.Name], r.Digest)
 	}
 
-	cacheUnknownDigests := func(errors []deploymentrecord.JobError) {
-		for _, e := range errors {
+	cacheUnknownDigests := func(jobErrors []deploymentrecord.JobError) {
+		for _, e := range jobErrors {
 			if e.Cause == "not_found" {
 				if digests, ok := nameToDigests[e.Name]; ok && len(digests) == 1 {
 					c.unknownArtifacts.Set(digests[0], true, unknownArtifactTTL)
