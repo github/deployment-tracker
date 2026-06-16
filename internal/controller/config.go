@@ -31,10 +31,8 @@ type Config struct {
 	Organization        string
 	// BulkClusterSync enables the async cluster job endpoint for startup
 	// state sync. When false, startup sync is skipped and only individual
-	// PostOne calls are used. Note: this is experimental and requires
-	// enablement of a feature flag by GitHub. If enabled without the API-side
-	// feature flag, the controller will not post deployment records at startup,
-	// only ongoing pod events that arrive after the initial informer sync.
+	// PostOne calls are used. **Note: this is experimental and not yet available
+	// for public use.**
 	BulkClusterSync bool
 }
 
