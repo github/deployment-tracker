@@ -258,50 +258,6 @@ func (c *Client) PostOne(ctx context.Context, record *Record) error {
 	}
 }
 
-// PostCluster sends a full cluster state of records to GitHub deployment
-// records cluster API.
-func (c *Client) PostCluster(ctx context.Context, records []*Record, cluster string) ([]byte, error) {
-	if len(records) == 0 {
-		slog.Debug("Records is empty, skipping")
-		return nil, nil
-	}
-
-	clusterURL := fmt.Sprintf("%s/orgs/%s/artifacts/metadata/deployment-record/cluster/%s", c.baseURL, c.org, url.PathEscape(cluster))
-
-	body, err := buildClusterRequestBody(records)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal records: %w", err)
-	}
-
-	respBody, statusCode, lastErr := c.doWithRetry(ctx, http.MethodPost, clusterURL, body)
-
-	var clientErr *ClientError
-	switch {
-	case errors.As(lastErr, &clientErr):
-		dtmetrics.PostDeploymentRecordClientError.Inc()
-		slog.Warn("client error, aborting",
-			"status_code", statusCode,
-			"url", clusterURL,
-			"resp_msg", string(respBody),
-		)
-		return nil, fmt.Errorf("client error: %w", lastErr)
-	case statusCode >= 200 && statusCode < 300:
-		dtmetrics.PostDeploymentRecordOk.Inc()
-		return respBody, nil
-	case statusCode == 404:
-		dtmetrics.PostDeploymentRecordUnknownArtifact.Inc()
-		return nil, &ClusterNoRepositoriesError{err: errors.New("no repositories found")}
-	default:
-		dtmetrics.PostDeploymentRecordHardFail.Inc()
-		slog.Error("all retries exhausted",
-			"count", c.retries,
-			"error", lastErr,
-			"cluster", cluster,
-		)
-		return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
-	}
-}
-
 // CreateClusterJob submits the full cluster state as an async job.
 // Returns the job response (including job ID) and any authorization errors
 // for rejected deployments.
