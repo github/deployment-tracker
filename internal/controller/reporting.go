@@ -163,6 +163,11 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []an
 		)
 	}
 
+	// Log per-deployment at INFO now that the job is queued, matching the
+	// individual "Posted record" path so startup sync has equivalent
+	// per-deployment visibility. Records rejected at submission are excluded.
+	logSyncedRecords(jobResp, syncRecords)
+
 	// Wait for job completion with a timeout to prevent indefinite startup delay.
 	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -197,9 +202,20 @@ func (c *Controller) processSyncEvents(ctx context.Context, syncClusterPods []an
 	return nil
 }
 
+// syncCandidate is a single container observed on a pod that is eligible to
+// become the deployment record for a given deployment_name during startup sync.
+type syncCandidate struct {
+	pod       *corev1.Pod
+	container corev1.Container
+	wlName    string
+}
+
 func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any) []*deploymentrecord.Record {
-	seenSyncRecords := make(map[string]bool)
-	var syncRecords []*deploymentrecord.Record
+	// The API requires a unique set of deployment_names for a snapshot job.
+	// During a rollout the same deployment_name can appear with multiple digests
+	// (old and new pods running at once), so we must collapse to a single digest per workload +
+	// container name. We pick the newest running pod so the snapshot reflects the rollout target.
+	winners := make(map[string]syncCandidate)
 	for _, p := range syncClusterPods {
 		pod, ok := p.(*corev1.Pod)
 		if !ok {
@@ -227,34 +243,75 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 		allContainers = append(allContainers, pod.Spec.Containers...)
 		allContainers = append(allContainers, pod.Spec.InitContainers...)
 
-		// Filter out containers already in syncRecords
-		var newContainers []corev1.Container
+		// Dedupe to one record per deployment_name. On a digest conflict
+		// (rollout in progress) the newest running pod wins.
 		for _, container := range allContainers {
 			dn := getARDeploymentName(pod, container, c.cfg.Template, wl.Name)
 			digest := getContainerDigest(pod, container.Name)
 			if dn == "" || digest == "" {
 				continue
 			}
-			key := getCacheKey(EventCreated, dn, digest)
-			if seenSyncRecords[key] {
+
+			existing, exists := winners[dn]
+			if !exists {
+				winners[dn] = syncCandidate{pod: pod, container: container, wlName: wl.Name}
 				continue
 			}
-			seenSyncRecords[key] = true
-			newContainers = append(newContainers, container)
-		}
 
-		if len(newContainers) == 0 {
-			continue
-		}
-
-		// Only gather aggregate metadata if there are new containers
-		aggPodMetadata := c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(pod))
-
-		for _, container := range newContainers {
-			record := c.buildRecord(pod, container, EventCreated, wl.Name, aggPodMetadata)
-			if record != nil {
-				syncRecords = append(syncRecords, record)
+			// Same deployment_name with the same digest is just another replica
+			// of the same version. The submitted record (deployment_name, digest,
+			// image) is identical regardless of which pod we pick, so keep the
+			// one we already have.
+			existingDigest := getContainerDigest(existing.pod, existing.container.Name)
+			if existingDigest == digest {
+				continue
 			}
+
+			// Collision with a different digest (e.g. rollout in progress).
+			// Keep the newest running pod's digest and log the decision so the
+			// rollout is visible.
+			if isPreferredSyncPod(pod, existing.pod) {
+				slog.Info("Multiple digests observed for deployment_name during sync, choosing newest running",
+					"deployment_name", dn,
+					"chosen_pod", pod.Name,
+					"chosen_digest", digest,
+					"replaced_pod", existing.pod.Name,
+					"replaced_digest", existingDigest,
+				)
+				winners[dn] = syncCandidate{pod: pod, container: container, wlName: wl.Name}
+			} else {
+				slog.Info("Multiple digests observed for deployment_name during sync, keeping newest running",
+					"deployment_name", dn,
+					"kept_pod", existing.pod.Name,
+					"kept_digest", existingDigest,
+					"skipped_pod", pod.Name,
+					"skipped_digest", digest,
+				)
+			}
+		}
+	}
+
+	// Build records from the winning candidates. Iterate in sorted
+	// deployment_name order for deterministic output, and cache aggregate
+	// metadata per pod so pods hosting multiple winners aren't recomputed.
+	aggCache := make(map[*corev1.Pod]*metadata.AggregatePodMetadata)
+	dns := make([]string, 0, len(winners))
+	for dn := range winners {
+		dns = append(dns, dn)
+	}
+	slices.Sort(dns)
+
+	syncRecords := make([]*deploymentrecord.Record, 0, len(winners))
+	for _, dn := range dns {
+		cand := winners[dn]
+		agg, ok := aggCache[cand.pod]
+		if !ok {
+			agg = c.metadataAggregator.BuildAggregatePodMetadata(ctx, podToPartialMetadata(cand.pod))
+			aggCache[cand.pod] = agg
+		}
+		record := c.buildRecord(cand.pod, cand.container, EventCreated, cand.wlName, agg)
+		if record != nil {
+			syncRecords = append(syncRecords, record)
 		}
 	}
 
@@ -262,6 +319,45 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 		"count", len(syncRecords),
 	)
 	return syncRecords
+}
+
+// isPreferredSyncPod reports whether candidate should replace current as the
+// chosen pod for a deployment_name during startup sync. Running pods are
+// preferred over terminal pods; among pods in the same category the most
+// recently created pod wins. This makes the startup snapshot reflect the
+// rollout target (newest running digest) when multiple digests coexist.
+func isPreferredSyncPod(candidate, current *corev1.Pod) bool {
+	candRunning := candidate.Status.Phase == corev1.PodRunning
+	curRunning := current.Status.Phase == corev1.PodRunning
+	if candRunning != curRunning {
+		return candRunning
+	}
+	return candidate.CreationTimestamp.Time.After(current.CreationTimestamp.Time)
+}
+
+// logSyncedRecords emits one log line per accepted record after a cluster job
+// has been queued.
+func logSyncedRecords(jobResp *deploymentrecord.JobResponse, records []*deploymentrecord.Record) {
+	rejected := make(map[string]bool, len(jobResp.Errors))
+	for _, e := range jobResp.Errors {
+		rejected[e.Name] = true
+	}
+
+	for _, r := range records {
+		if rejected[r.Name] {
+			continue
+		}
+		slog.Info("Submitted record for sync",
+			"event_type", EventCreated,
+			"name", r.Name,
+			"deployment_name", r.DeploymentName,
+			"status", r.Status,
+			"digest", r.Digest,
+			"runtime_risks", r.RuntimeRisks,
+			"tags", r.Tags,
+			"job_id", jobResp.JobID,
+		)
+	}
 }
 
 // fillCachesFromSubmitted populates the observedDeployments cache from the

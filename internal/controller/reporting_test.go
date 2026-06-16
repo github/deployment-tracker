@@ -252,6 +252,186 @@ func TestProcessSyncEvents_DedupeContainers(t *testing.T) {
 	assert.Equal(t, 1, poster.clusterRecordCount, "CreateClusterJob should receive only 1 record")
 }
 
+func TestMakeSyncRecords_RolloutPicksNewestRunningDigest(t *testing.T) {
+	t.Parallel()
+	oldDigest := "sha256:old"
+	newDigest := "sha256:new"
+	now := time.Now()
+
+	// Same deployment_name (default/test-deploy/app) with two digests, as
+	// happens mid-rollout when old and new pods are both Running.
+	oldPod := makeTestPod("app", "test-deploy-old", oldDigest, "ReplicaSet")
+	oldPod.Name = "pod-old"
+	oldPod.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Minute))
+
+	newPod := makeTestPod("app", "test-deploy-new", newDigest, "ReplicaSet")
+	newPod.Name = "pod-new"
+	newPod.CreationTimestamp = metav1.NewTime(now)
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	// Feed old first so we exercise replacement, not just first-seen.
+	records := ctrl.makeSyncRecords(context.Background(), []any{oldPod, newPod})
+	require.Len(t, records, 1, "rollout should collapse to one record per deployment_name")
+	assert.Equal(t, newDigest, records[0].Digest, "newest running pod digest should win")
+	assert.Equal(t, "default/test-deploy/app", records[0].DeploymentName)
+}
+
+func TestMakeSyncRecords_NewestWinsRegardlessOfOrder(t *testing.T) {
+	t.Parallel()
+	oldDigest := "sha256:old"
+	newDigest := "sha256:new"
+	now := time.Now()
+
+	oldPod := makeTestPod("app", "test-deploy-old", oldDigest, "ReplicaSet")
+	oldPod.Name = "pod-old"
+	oldPod.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Minute))
+
+	newPod := makeTestPod("app", "test-deploy-new", newDigest, "ReplicaSet")
+	newPod.Name = "pod-new"
+	newPod.CreationTimestamp = metav1.NewTime(now)
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	// Feed newest first, then older. The older pod must not overwrite.
+	records := ctrl.makeSyncRecords(context.Background(), []any{newPod, oldPod})
+	require.Len(t, records, 1)
+	assert.Equal(t, newDigest, records[0].Digest, "newest wins even when the older pod is processed last")
+}
+
+func TestMakeSyncRecords_PrefersRunningOverNewerTerminal(t *testing.T) {
+	t.Parallel()
+	runningDigest := "sha256:running"
+	terminalDigest := "sha256:terminal"
+	now := time.Now()
+
+	// Running pod is OLDER, terminal Job pod is NEWER. Running should still
+	// win because a running pod reflects current cluster state.
+	runningPod := makeTestPod("app", "test-job", runningDigest, "Job")
+	runningPod.Name = "pod-running"
+	runningPod.Status.Phase = corev1.PodRunning
+	runningPod.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Minute))
+
+	terminalPod := makeTestPod("app", "test-job", terminalDigest, "Job")
+	terminalPod.Name = "pod-terminal"
+	terminalPod.Status.Phase = corev1.PodSucceeded
+	terminalPod.CreationTimestamp = metav1.NewTime(now)
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-job"}
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{runningPod, terminalPod})
+	require.Len(t, records, 1)
+	assert.Equal(t, runningDigest, records[0].Digest, "running pod should win over a newer terminal pod")
+}
+
+func TestMakeSyncRecords_TerminalPicksNewest(t *testing.T) {
+	t.Parallel()
+	oldDigest := "sha256:old"
+	newDigest := "sha256:new"
+	now := time.Now()
+
+	// Two terminal Job pods (no running pod). Newest terminal wins.
+	oldPod := makeTestPod("app", "test-job", oldDigest, "Job")
+	oldPod.Name = "pod-old"
+	oldPod.Status.Phase = corev1.PodSucceeded
+	oldPod.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Minute))
+
+	newPod := makeTestPod("app", "test-job", newDigest, "Job")
+	newPod.Name = "pod-new"
+	newPod.Status.Phase = corev1.PodSucceeded
+	newPod.CreationTimestamp = metav1.NewTime(now)
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-job"}
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{oldPod, newPod})
+	require.Len(t, records, 1)
+	assert.Equal(t, newDigest, records[0].Digest, "newest terminal pod digest should win")
+}
+
+func TestMakeSyncRecords_DistinctDeploymentNamesNotCollapsed(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	// Different container names produce different deployment_names, so both
+	// must be kept even though they share a pod-creation window.
+	podA := makeTestPod("app", "test-deploy-1", "sha256:aaa", "ReplicaSet")
+	podA.Name = "pod-a"
+	podA.CreationTimestamp = metav1.NewTime(now)
+
+	podB := makeTestPod("sidecar", "test-deploy-2", "sha256:bbb", "ReplicaSet")
+	podB.Name = "pod-b"
+	podB.CreationTimestamp = metav1.NewTime(now)
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	records := ctrl.makeSyncRecords(context.Background(), []any{podA, podB})
+	require.Len(t, records, 2, "distinct deployment_names should not be collapsed")
+
+	byName := map[string]string{}
+	for _, r := range records {
+		byName[r.DeploymentName] = r.Digest
+	}
+	assert.Equal(t, "sha256:aaa", byName["default/test-deploy/app"])
+	assert.Equal(t, "sha256:bbb", byName["default/test-deploy/sidecar"])
+}
+
+// TestMakeSyncRecords_NoDuplicateDeploymentNames is the regression guard for the
+// 400 "Duplicate deployment_name" error: under a messy real-world mix (a rollout
+// with multiple replicas of two digests, plus a second workload), every submitted
+// record must have a unique deployment_name.
+func TestMakeSyncRecords_NoDuplicateDeploymentNames(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	mkPod := func(name, container, digest string, phase corev1.PodPhase, created time.Time) *corev1.Pod {
+		p := makeTestPod(container, "test-deploy-rs", digest, "ReplicaSet")
+		p.Name = name
+		p.Status.Phase = phase
+		p.CreationTimestamp = metav1.NewTime(created)
+		return p
+	}
+
+	old := now.Add(-10 * time.Minute)
+	pods := []any{
+		// Workload A ("app"): rollout with 2 old replicas + 2 new replicas.
+		mkPod("a-old-1", "app", "sha256:old", corev1.PodRunning, old),
+		mkPod("a-old-2", "app", "sha256:old", corev1.PodRunning, old),
+		mkPod("a-new-1", "app", "sha256:new", corev1.PodRunning, now),
+		mkPod("a-new-2", "app", "sha256:new", corev1.PodRunning, now),
+		// Workload B ("sidecar"): single stable version with 3 replicas.
+		mkPod("b-1", "sidecar", "sha256:bbb", corev1.PodRunning, now),
+		mkPod("b-2", "sidecar", "sha256:bbb", corev1.PodRunning, now),
+		mkPod("b-3", "sidecar", "sha256:bbb", corev1.PodRunning, now),
+	}
+
+	ctrl := newTestController(&mockPoster{})
+	ctrl.workloadResolver = &mockResolver{name: "test-deploy"}
+
+	records := ctrl.makeSyncRecords(context.Background(), pods)
+
+	// Ensure no duplicate deployment_names are submitted.
+	seen := map[string]bool{}
+	for _, r := range records {
+		assert.Falsef(t, seen[r.DeploymentName],
+			"duplicate deployment_name submitted: %s", r.DeploymentName)
+		seen[r.DeploymentName] = true
+	}
+
+	// And the winning digest for the rolled-out workload is the newest.
+	require.Len(t, records, 2, "two distinct deployment_names expected")
+	byName := map[string]string{}
+	for _, r := range records {
+		byName[r.DeploymentName] = r.Digest
+	}
+	assert.Equal(t, "sha256:new", byName["default/test-deploy/app"], "newest digest should win for the rollout")
+	assert.Equal(t, "sha256:bbb", byName["default/test-deploy/sidecar"])
+}
+
 func TestProcessSyncEvents_409Conflict(t *testing.T) {
 	t.Parallel()
 	digest := "sha256:abc123"
