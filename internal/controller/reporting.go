@@ -332,7 +332,7 @@ func isPreferredSyncPod(candidate, current *corev1.Pod) bool {
 	if candRunning != curRunning {
 		return candRunning
 	}
-	return candidate.CreationTimestamp.Time.After(current.CreationTimestamp.Time)
+	return candidate.CreationTimestamp.After(current.CreationTimestamp.Time)
 }
 
 // logSyncedRecords emits one log line per accepted record after a cluster job
