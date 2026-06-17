@@ -39,6 +39,11 @@ const (
 	// informerSyncTimeoutDuration is the maximum duration of time allowed
 	// for the informers to sync to prevent the controller from hanging indefinitely.
 	informerSyncTimeoutDuration = 60 * time.Second
+
+	// deploymentRecordClientTimeoutSeconds sets the HTTP timeout for calls to the
+	// deployment record API. The timeout is generous to accommodate longer running
+	// calls like posting a cluster job.
+	deploymentRecordClientTimeoutSeconds = 30
 )
 
 type ttlCache interface {
@@ -133,6 +138,7 @@ func New(clientset kubernetes.Interface, metadataAggregator podMetadataAggregato
 			cfg.GHAppPrivateKeyPath,
 		))
 	}
+	clientOpts = append(clientOpts, deploymentrecord.WithTimeout(deploymentRecordClientTimeoutSeconds))
 
 	apiClient, err := deploymentrecord.NewClient(
 		cfg.BaseURL,
