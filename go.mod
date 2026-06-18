@@ -3,13 +3,13 @@ module github.com/github/deployment-tracker
 go 1.26.0
 
 require (
-	github.com/bradleyfalzon/ghinstallation/v2 v2.18.0
+	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/time v0.15.0
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
-	k8s.io/client-go v0.36.1
+	k8s.io/api v0.36.2
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.36.2
 	sigs.k8s.io/controller-runtime v0.24.1
 )
 
@@ -26,7 +26,7 @@ require (
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
-	github.com/google/go-github/v84 v84.0.0 // indirect
+	github.com/google/go-github/v88 v88.0.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
