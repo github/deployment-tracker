@@ -342,7 +342,8 @@ func (c *Client) WaitForClusterJob(ctx context.Context, cluster string, jobID in
 			return status, nil
 		}
 		slog.Info("waiting for cluster job completion",
-			"status", status,
+			"job_id", jobID,
+			"status", status.Status,
 			"attempt", attempt,
 		)
 
