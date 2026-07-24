@@ -340,12 +340,11 @@ func (c *Client) WaitForClusterJob(ctx context.Context, cluster string, jobID in
 		}
 		if status.Status == "completed" || status.Status == "failed" {
 			return status, nil
-		} else {
-			slog.Info("waiting for cluster job completion",
-				"status", status,
-				"attempt", attempt,
-			)
 		}
+		slog.Info("waiting for cluster job completion",
+			"status", status,
+			"attempt", attempt,
+		)
 
 		delay := time.Duration(math.Min(
 			float64(initialDelay)*math.Pow(2, float64(attempt)),
