@@ -215,6 +215,7 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 	// During a rollout the same deployment_name can appear with multiple digests
 	// (old and new pods running at once), so we must collapse to a single digest per workload and
 	// container name. We pick the newest running pod so the snapshot reflects the rollout target.
+	slog.Info("making sync records...")
 	winners := make(map[string]syncCandidate)
 	for _, p := range syncClusterPods {
 		pod, ok := p.(*corev1.Pod)
@@ -271,7 +272,7 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 			// Keep the newest running pod's digest and log the decision so the
 			// rollout is visible.
 			if isPreferredSyncPod(pod, existing.pod) {
-				slog.Info("Multiple digests observed for deployment_name during sync, choosing preferred pod",
+				slog.Debug("Multiple digests observed for deployment_name during sync, choosing preferred pod",
 					"deployment_name", dn,
 					"chosen_pod", pod.Name,
 					"chosen_digest", digest,
@@ -280,7 +281,7 @@ func (c *Controller) makeSyncRecords(ctx context.Context, syncClusterPods []any)
 				)
 				winners[dn] = syncCandidate{pod: pod, container: container, wlName: wl.Name}
 			} else {
-				slog.Info("Multiple digests observed for deployment_name during sync, keeping preferred pod",
+				slog.Debug("Multiple digests observed for deployment_name during sync, keeping preferred pod",
 					"deployment_name", dn,
 					"kept_pod", existing.pod.Name,
 					"kept_digest", existingDigest,

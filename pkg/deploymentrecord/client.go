@@ -262,6 +262,7 @@ func (c *Client) PostOne(ctx context.Context, record *Record) error {
 // Returns the job response (including job ID) and any authorization errors
 // for rejected deployments.
 func (c *Client) CreateClusterJob(ctx context.Context, records []*Record, cluster string) (*JobResponse, error) {
+	slog.Info("starting cluster job", "record_count", len(records))
 	if len(records) == 0 {
 		return nil, errors.New("records cannot be empty")
 	}
@@ -340,6 +341,11 @@ func (c *Client) WaitForClusterJob(ctx context.Context, cluster string, jobID in
 		if status.Status == "completed" || status.Status == "failed" {
 			return status, nil
 		}
+		slog.Info("waiting for cluster job completion",
+			"job_id", jobID,
+			"status", status.Status,
+			"attempt", attempt,
+		)
 
 		delay := time.Duration(math.Min(
 			float64(initialDelay)*math.Pow(2, float64(attempt)),
