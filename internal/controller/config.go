@@ -31,8 +31,7 @@ type Config struct {
 	Organization        string
 	// BulkClusterSync enables the async cluster job endpoint for startup
 	// state sync. When false, startup sync is skipped and only individual
-	// PostOne calls are used. **Note: this is experimental and not yet available
-	// for public use.**
+	// PostOne calls are used.
 	BulkClusterSync bool
 }
 
