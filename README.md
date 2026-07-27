@@ -72,6 +72,7 @@ Two modes of authentication are supported:
 | `LOGICAL_ENVIRONMENT`  | Logical environment name                   | (required)                                           |
 | `PHYSICAL_ENVIRONMENT` | Physical environment name                  | `""`                                                 |
 | `CLUSTER`              | Cluster name                               | (required)                                           |
+| `BULK_CLUSTER_SYNC`    | Bulk-sync cluster state at startup         | `true`                                               |
 | `API_TOKEN`            | API authentication token                   | `""`                                                 |
 | `GH_APP_ID`            | GitHub App ID                              | `""`                                                 |
 | `GH_INSTALL_ID`        | GitHub App installation ID                 | `""`                                                 |
