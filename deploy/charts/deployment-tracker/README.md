@@ -64,6 +64,7 @@ At least one authentication method must be configured (see
 | `config.dnTemplate` | Deployment name template | `{{namespace}}/{{deploymentName}}/{{containerName}}` |
 | `config.namespace` | Namespace to monitor (empty for all) | `""` |
 | `config.excludeNamespaces` | Namespaces to exclude (comma-separated) | `""` |
+| `config.bulkClusterSync` | Bulk-sync cluster state at startup | `true` |
 | `config.workers` | Number of worker goroutines | `2` |
 | `config.metricsPort` | Port for Prometheus metrics | `9090` |
 
