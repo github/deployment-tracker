@@ -30,6 +30,8 @@ config:
   namespace: ""
   # Comma-separated list of namespaces to exclude from monitoring
   excludeNamespaces: ""
+  # Bulk-sync cluster state when the controller starts
+  bulkClusterSync: true
   # Number of worker goroutines
   workers: 2
   # Port for Prometheus metrics

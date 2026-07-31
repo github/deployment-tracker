@@ -69,6 +69,8 @@ spec:
               value: {{ .Values.config.baseUrl | quote }}
             - name: DN_TEMPLATE
               value: {{ .Values.config.dnTemplate | quote }}
+            - name: BULK_CLUSTER_SYNC
+              value: {{ .Values.config.bulkClusterSync | quote }}
             {{- if .Values.auth.apiToken }}
             - name: API_TOKEN
               value: {{ .Values.auth.apiToken | quote }}

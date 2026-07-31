@@ -67,8 +67,9 @@ jobs:
       - name: Update chart version
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
+          IMAGE_TAG=${GITHUB_REF#refs/tags/}
           sed -i "s/^version:.*/version: ${VERSION}/" deploy/charts/deployment-tracker/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/charts/deployment-tracker/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${IMAGE_TAG}\"/" deploy/charts/deployment-tracker/Chart.yaml
 
       - name: Package Helm chart
         run: helm package deploy/charts/deployment-tracker
